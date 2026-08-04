@@ -9,7 +9,10 @@ class RulesEngine:
 
     def reload(self):
         with open(self.path, "r", encoding="utf-8") as f:
-            self.cfg = yaml.safe_load(f)
+            loaded = yaml.safe_load(f)
+        if not isinstance(loaded, dict):
+            raise ValueError("Rules configuration must be a YAML mapping")
+        self.cfg = loaded
 
     def apply(self, ticket: dict, model_out: dict) -> dict:
         rules = self.cfg.get("rules", {})
