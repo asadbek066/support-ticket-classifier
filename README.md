@@ -81,7 +81,8 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/classify" -Method Post -ContentTyp
 ## Notes
 
 - Classification quality depends on prompt/model quality and configured rules.
-- For production, keep audit logs and configuration changes under version control.
+- Audit-log responses are newest-first; malformed or oversized JSONL records are ignored so one damaged record cannot hide later decisions.
+- For production, keep audit logs and configuration changes under version control and configure retention outside the service.
 
 ## Security and operating boundary
 
