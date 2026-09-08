@@ -82,3 +82,12 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/classify" -Method Post -ContentTyp
 
 - Classification quality depends on prompt/model quality and configured rules.
 - For production, keep audit logs and configuration changes under version control.
+
+## Security and operating boundary
+
+The service has no built-in authentication. Keep it on the loopback interface
+(`127.0.0.1`, the default Uvicorn bind) or put it behind an authenticated,
+trusted reverse proxy; do not expose the dashboard, audit logs, or reload
+endpoint directly to the internet. Ticket text and model output are treated as
+untrusted data, and the API bounds ticket fields and batch size before
+processing.

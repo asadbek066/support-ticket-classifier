@@ -1,6 +1,20 @@
 import json
 import re
+
 import httpx
+
+FALLBACK_REASON = "model-unreachable-or-invalid-response"
+MAX_RESPONSE_CHARS = 20_000
+
+
+def _fallback() -> dict:
+    return {
+        "category": "Other / Needs Review",
+        "confidence": 0.0,
+        "queue": "triage",
+        "reason": FALLBACK_REASON,
+        "human_review": True,
+    }
 
 
 def generate_classification(ticket: dict, categories, model: str, api_url: str) -> dict:
@@ -10,52 +24,61 @@ def generate_classification(ticket: dict, categories, model: str, api_url: str) 
         r = httpx.post(api_url, json=payload, timeout=60.0)
         r.raise_for_status()
         text = r.text.strip()
-        lines = text.split('\n')
-        
+        if len(text) > MAX_RESPONSE_CHARS:
+            return _fallback()
+        lines = text.split("\n")
+
         if len(lines) > 1:
             final_response = None
             for line in reversed(lines):
                 if line.strip():
                     try:
                         obj = json.loads(line)
-                        if obj.get("done", False):
-                            final_response = obj.get("response", "")
+                        if isinstance(obj, dict) and obj.get("done", False):
+                            candidate = obj.get("response", "")
+                            final_response = candidate if isinstance(candidate, str) else ""
                             break
-                    except Exception:
+                    except (AttributeError, TypeError, ValueError):
                         pass
             if final_response is not None:
                 text = final_response
             else:
                 try:
                     last_obj = json.loads(lines[-1].strip())
-                    text = last_obj.get("response", text)
-                except Exception:
+                    if isinstance(last_obj, dict) and isinstance(last_obj.get("response"), str):
+                        text = last_obj["response"]
+                except (AttributeError, TypeError, ValueError):
                     pass
         else:
             try:
                 obj = json.loads(text)
-                text = obj.get("response", "") or obj.get("text", "") or text
-            except Exception:
+                if isinstance(obj, dict):
+                    candidate = obj.get("response", "") or obj.get("text", "") or text
+                    if isinstance(candidate, str):
+                        text = candidate
+            except (AttributeError, TypeError, ValueError):
                 pass
-                
-    except Exception as e:
-        err_text = str(e)
-        raw = r.text if 'r' in locals() and getattr(r, 'text', None) else ""
-        text = f"ERROR: {err_text}\n{raw}"
+
+    except Exception:
+        return _fallback()
+
+    if not isinstance(text, str) or len(text) > MAX_RESPONSE_CHARS:
+        return _fallback()
 
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         last = text.strip().splitlines()[-1] if text.strip() else ""
         try:
-            return json.loads(last)
-        except Exception:
-            return {"category": "Other / Needs Review", "confidence": 0.0, "queue": "triage", "reason": text.strip() or "model-unreachable-or-invalid-response", "human_review": True}
+            parsed = json.loads(last)
+            return parsed if isinstance(parsed, dict) else _fallback()
+        except (AttributeError, TypeError, ValueError):
+            return _fallback()
 
     try:
         data = json.loads(m.group(0))
-        return data
+        return data if isinstance(data, dict) else _fallback()
     except Exception:
-        return {"category": "Other / Needs Review", "confidence": 0.0, "queue": "triage", "reason": text.strip() or "model-unreachable-or-invalid-response", "human_review": True}
+        return _fallback()
 
 
 def build_prompt(ticket: dict, categories) -> str:

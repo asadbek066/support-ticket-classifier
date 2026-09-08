@@ -34,6 +34,44 @@ class RulesEngineReloadTests(unittest.TestCase):
         result = self.engine.apply({}, {"category": "Billing", "confidence": 0.9})
         self.assertEqual(result["queue"], "billing")
 
+    def test_model_output_is_normalized_to_configured_categories_and_queues(self):
+        self.config_path.write_text(
+            """
+categories:
+  - Billing
+queue_map:
+  Billing: billing
+rules:
+  confidence_threshold: 0.65
+""",
+            encoding="utf-8",
+        )
+        engine = RulesEngine(str(self.config_path))
+
+        result = engine.apply(
+            {"customer_type": "enterprise"},
+            {
+                "category": "<script>alert(1)</script>",
+                "confidence": float("nan"),
+                "queue": "attacker-controlled-queue",
+                "reason": "x" * 3000,
+                "human_review": "false",
+            },
+        )
+
+        self.assertEqual(result["category"], "Other / Needs Review")
+        self.assertEqual(result["queue"], "triage")
+        self.assertEqual(result["confidence"], 0.0)
+        self.assertTrue(result["human_review"])
+        self.assertEqual(len(result["reason"]), 2000)
+
+    def test_configured_queue_wins_over_model_queue(self):
+        result = self.engine.apply(
+            {},
+            {"category": "Billing", "confidence": 0.9, "queue": "wrong-queue"},
+        )
+        self.assertEqual(result["queue"], "billing")
+
 
 if __name__ == "__main__":
     unittest.main()
