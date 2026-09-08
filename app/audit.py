@@ -27,6 +27,7 @@ def log_classification(ticket: dict, result: dict, overrides: dict = None) -> st
 
 
 def read_audit_logs(limit: int = 100) -> list:
+    limit = min(max(limit, 1), 1000)
     ensure_audit_dir()
     entries = []
     log_files = sorted(AUDIT_LOG_DIR.glob("classifications-*.jsonl"), reverse=True)

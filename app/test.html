@@ -117,6 +117,20 @@
     </div>
 
     <script>
+        function escapeHtml(value) {
+            const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+            return String(value ?? '').replace(/[&<>"']/g, character => entities[character]);
+        }
+
+        function confidencePercent(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? Math.round(Math.min(Math.max(number, 0), 1) * 100) : 0;
+        }
+
+        function errorMessage(error) {
+            return escapeHtml(error instanceof Error ? error.message : 'Request failed');
+        }
+
         const examples = {
             billing: {
                 subject: 'Payment failed - card declined',
@@ -187,7 +201,7 @@
 
                 const data = await response.json();
                 
-                const confidence = Math.round(data.confidence * 100);
+                const confidence = confidencePercent(data.confidence);
                 const confClass = confidence >= 65 ? '' : 'low';
                 
                 resultContent.innerHTML = `
@@ -196,7 +210,7 @@
                     <div class="result-item">
                         <div class="result-label">Category</div>
                         <div class="result-value">
-                            <span class="tag category">${data.category}</span>
+                            <span class="tag category">${escapeHtml(data.category)}</span>
                         </div>
                     </div>
 
@@ -213,7 +227,7 @@
                     <div class="result-item">
                         <div class="result-label">Destination Queue</div>
                         <div class="result-value">
-                            <span class="tag queue">${data.queue}</span>
+                            <span class="tag queue">${escapeHtml(data.queue)}</span>
                         </div>
                     </div>
 
@@ -226,12 +240,12 @@
 
                     <div class="result-item">
                         <div class="result-label">Reasoning</div>
-                        <div class="result-value">${data.reason || '(No additional reasoning)'}</div>
+                        <div class="result-value">${escapeHtml(data.reason || '(No additional reasoning)')}</div>
                     </div>
                 `;
             } catch (error) {
                 resultContent.innerHTML = `
-                    <div class="error">❌ Error: ${error.message}</div>
+                    <div class="error">❌ Error: ${errorMessage(error)}</div>
                     <p>Make sure the API is running on http://localhost:8000</p>
                 `;
             }

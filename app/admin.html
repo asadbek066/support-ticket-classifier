@@ -99,6 +99,20 @@
     </div>
 
     <script>
+        function escapeHtml(value) {
+            const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+            return String(value ?? '').replace(/[&<>"']/g, character => entities[character]);
+        }
+
+        function confidencePercent(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? Math.round(Math.min(Math.max(number, 0), 1) * 100) : 0;
+        }
+
+        function errorMessage(error) {
+            return escapeHtml(error instanceof Error ? error.message : 'Request failed');
+        }
+
         // Tab switching
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
@@ -128,12 +142,12 @@
                     document.getElementById('status-info').innerHTML = `
                         <div style="color: ${color}; font-weight: 500;">${status}</div>
                         <div style="font-size: 12px; color: #666; margin-top: 5px;">
-                            Model: ${data.model} | API: ${data.api_url}
+                            Model: ${escapeHtml(data.model)} | API: ${escapeHtml(data.api_url)}
                         </div>
                     `;
                 })
                 .catch(e => {
-                    document.getElementById('status-info').innerHTML = `<div class="error">Error loading status: ${e.message}</div>`;
+                    document.getElementById('status-info').innerHTML = `<div class="error">Error loading status: ${errorMessage(e)}</div>`;
                 });
         }
 
@@ -144,16 +158,17 @@
                     document.getElementById('total-classified').textContent = data.total;
                     const tickets = data.logs || [];
                     const html = tickets.length ? tickets.map(log => {
+                        const ticket = log.ticket || {};
                         const clf = log.classification || {};
-                        const conf = (clf.confidence * 100).toFixed(0);
+                        const conf = confidencePercent(clf.confidence);
                         const confClass = conf >= 65 ? 'conf-high' : 'conf-low';
                         return `
                             <li class="ticket-item ${conf < 65 ? 'low-conf' : ''}">
-                                <div class="ticket-subject">${log.ticket.subject || '(No subject)'}</div>
+                                <div class="ticket-subject">${escapeHtml(ticket.subject || '(No subject)')}</div>
                                 <div class="ticket-meta">
-                                    <span><strong>Category:</strong> ${clf.category}</span>
+                                    <span><strong>Category:</strong> ${escapeHtml(clf.category)}</span>
                                     <span class="confidence ${confClass}">${conf}% confidence</span>
-                                    <span><strong>Queue:</strong> ${clf.queue}</span>
+                                    <span><strong>Queue:</strong> ${escapeHtml(clf.queue)}</span>
                                 </div>
                             </li>
                         `;
@@ -161,11 +176,11 @@
                     document.getElementById('recent-tickets').innerHTML = html;
                     
                     // Count low confidence
-                    const lowConf = tickets.filter(t => (t.classification.confidence || 0) < 0.65).length;
+                    const lowConf = tickets.filter(t => confidencePercent(t.classification && t.classification.confidence) < 65).length;
                     document.getElementById('low-conf-count').textContent = lowConf;
                 })
                 .catch(e => {
-                    document.getElementById('recent-tickets').innerHTML = `<li class="error">Error: ${e.message}</li>`;
+                    document.getElementById('recent-tickets').innerHTML = `<li class="error">Error: ${errorMessage(e)}</li>`;
                 });
         }
 
@@ -175,16 +190,17 @@
                 .then(data => {
                     const tickets = data.tickets || [];
                     const html = tickets.length ? tickets.map(log => {
+                        const ticket = log.ticket || {};
                         const clf = log.classification || {};
-                        const conf = (clf.confidence * 100).toFixed(0);
+                        const conf = confidencePercent(clf.confidence);
                         return `
                             <li class="ticket-item low-conf">
-                                <div class="ticket-subject">${log.ticket.subject || '(No subject)'}</div>
+                                <div class="ticket-subject">${escapeHtml(ticket.subject || '(No subject)')}</div>
                                 <div class="ticket-meta">
-                                    <span><strong>Category:</strong> ${clf.category}</span>
+                                    <span><strong>Category:</strong> ${escapeHtml(clf.category)}</span>
                                     <span class="confidence conf-low">${conf}% confidence</span>
-                                    <span><strong>Queue:</strong> ${clf.queue}</span>
-                                    <span><strong>Description:</strong> ${(log.ticket.description || '').substring(0, 50)}...</span>
+                                    <span><strong>Queue:</strong> ${escapeHtml(clf.queue)}</span>
+                                    <span><strong>Description:</strong> ${escapeHtml((ticket.description || '').substring(0, 50))}...</span>
                                 </div>
                             </li>
                         `;
@@ -192,7 +208,7 @@
                     document.getElementById('low-conf-tickets').innerHTML = html;
                 })
                 .catch(e => {
-                    document.getElementById('low-conf-tickets').innerHTML = `<li class="error">Error: ${e.message}</li>`;
+                    document.getElementById('low-conf-tickets').innerHTML = `<li class="error">Error: ${errorMessage(e)}</li>`;
                 });
         }
 
@@ -202,15 +218,16 @@
                 .then(data => {
                     const logs = data.logs || [];
                     const html = logs.length ? logs.map(log => {
+                        const ticket = log.ticket || {};
                         const clf = log.classification || {};
-                        const conf = (clf.confidence * 100).toFixed(0);
-                        const ts = new Date(log.timestamp).toLocaleString();
+                        const conf = confidencePercent(clf.confidence);
+                        const ts = escapeHtml(new Date(log.timestamp).toLocaleString());
                         return `
                             <li class="ticket-item ${conf < 65 ? 'low-conf' : ''}">
-                                <div class="ticket-subject">${log.ticket.subject || '(No subject)'}</div>
+                                <div class="ticket-subject">${escapeHtml(ticket.subject || '(No subject)')}</div>
                                 <div class="ticket-meta">
                                     <span><strong>Time:</strong> ${ts}</span>
-                                    <span><strong>Category:</strong> ${clf.category}</span>
+                                    <span><strong>Category:</strong> ${escapeHtml(clf.category)}</span>
                                     <span class="confidence ${conf >= 65 ? 'conf-high' : 'conf-low'}">${conf}%</span>
                                     <span>${clf.human_review ? '⚠️ Human Review' : '✓ Auto-routed'}</span>
                                 </div>
@@ -220,7 +237,7 @@
                     document.getElementById('audit-log-list').innerHTML = html;
                 })
                 .catch(e => {
-                    document.getElementById('audit-log-list').innerHTML = `<li class="error">Error: ${e.message}</li>`;
+                    document.getElementById('audit-log-list').innerHTML = `<li class="error">Error: ${errorMessage(e)}</li>`;
                 });
         }
 
