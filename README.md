@@ -41,12 +41,27 @@ It is designed for local-first usage with Ollama.
 2. Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.lock
 ```
+
+`requirements.lock` pins the complete runtime dependency graph used by CI.
+Update it deliberately with `uv pip compile requirements.txt --python-version
+3.11 --universal --output-file requirements.lock` when changing the direct
+requirements.
 
 3. Start Ollama and ensure your model is available.
 
-4. Run API:
+4. Configure a high-entropy admin token for audit, review-queue, config-reload,
+   and Ollama-diagnostic endpoints:
+
+```bash
+export TICKET_CLASSIFIER_ADMIN_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+```
+
+   Send it in the `X-Admin-Token` header. The admin endpoints remain disabled
+   with a `503` response until this token is configured.
+
+5. Run API:
 
 ```bash
 uvicorn app.main:app --reload --port 8000
@@ -86,9 +101,11 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/classify" -Method Post -ContentTyp
 
 ## Security and operating boundary
 
-The service has no built-in authentication. Keep it on the loopback interface
-(`127.0.0.1`, the default Uvicorn bind) or put it behind an authenticated,
-trusted reverse proxy; do not expose the dashboard, audit logs, or reload
-endpoint directly to the internet. Ticket text and model output are treated as
-untrusted data, and the API bounds ticket fields and batch size before
-processing.
+Admin audit, manual-review, config-reload, and Ollama-diagnostic endpoints
+require the configured `TICKET_CLASSIFIER_ADMIN_TOKEN` in the
+`X-Admin-Token` header and fail closed when it is absent. Keep the service on
+the loopback interface (`127.0.0.1`, the default Uvicorn bind) or put it behind
+an authenticated, trusted reverse proxy; do not expose the dashboard or
+classification endpoints directly to the internet without an abuse-control
+and privacy review. Ticket text and model output are treated as untrusted data,
+and the API bounds ticket fields and batch size before processing.
