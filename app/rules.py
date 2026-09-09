@@ -13,7 +13,7 @@ class RulesEngine:
         with open(self.path, "r", encoding="utf-8") as f:
             loaded = yaml.safe_load(f)
         if not isinstance(loaded, dict):
-            raise ValueError("Rules configuration must be a YAML mapping")
+            raise TypeError("Rules configuration must be a YAML mapping")
         self.cfg = loaded
 
     def apply(self, ticket: dict, model_out: object) -> dict:
@@ -48,7 +48,9 @@ class RulesEngine:
             if isinstance(key, str) and isinstance(value, str) and value.strip()
         }
         configured_categories = self.cfg.get("categories")
-        category_values = configured_categories if isinstance(configured_categories, list) else []
+        category_values = (
+            configured_categories if isinstance(configured_categories, list) else []
+        )
         categories = [item for item in category_values if isinstance(item, str)]
         enforce_categories = bool(categories)
         fallback_category = "Other / Needs Review"
@@ -56,7 +58,9 @@ class RulesEngine:
         output = model_out if isinstance(model_out, dict) else {}
         raw_category = output.get("category")
         category = raw_category.strip() if isinstance(raw_category, str) else ""
-        invalid_category = not category or (enforce_categories and category not in categories)
+        invalid_category = not category or (
+            enforce_categories and category not in categories
+        )
         if invalid_category:
             category = fallback_category
 
@@ -67,7 +71,10 @@ class RulesEngine:
             confidence = 0.0
         if not math.isfinite(confidence):
             confidence = 0.0
-        if isinstance(ticket.get("customer_type"), str) and ticket["customer_type"].lower() == "enterprise":
+        if (
+            isinstance(ticket.get("customer_type"), str)
+            and ticket["customer_type"].lower() == "enterprise"
+        ):
             confidence += enterprise_boost
         confidence = min(max(confidence, 0.0), 1.0)
 

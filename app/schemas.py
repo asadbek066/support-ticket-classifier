@@ -1,5 +1,3 @@
-from typing import List
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -26,12 +24,12 @@ class ClassificationResponse(BaseModel):
 class BatchClassificationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    tickets: List[Ticket] = Field(min_length=1, max_length=100)
+    tickets: list[Ticket] = Field(min_length=1, max_length=100)
 
 
 class BatchClassificationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    results: List[ClassificationResponse]
+    results: list[ClassificationResponse]
     total: int
     processing_time_ms: float

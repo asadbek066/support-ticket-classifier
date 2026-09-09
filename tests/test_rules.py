@@ -4,7 +4,6 @@ from pathlib import Path
 
 from app.rules import RulesEngine
 
-
 VALID_CONFIG = """
 rules:
   confidence_threshold: 0.65
@@ -27,7 +26,7 @@ class RulesEngineReloadTests(unittest.TestCase):
         original = self.engine.cfg
         self.config_path.write_text("", encoding="utf-8")
 
-        with self.assertRaisesRegex(ValueError, "mapping"):
+        with self.assertRaisesRegex((TypeError, ValueError), "mapping"):
             self.engine.reload()
 
         self.assertIs(self.engine.cfg, original)

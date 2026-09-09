@@ -34,6 +34,12 @@
         button:hover { background: #2980b9; }
         .loading { color: #999; font-style: italic; }
         .error { color: #e74c3c; padding: 10px; background: #fadbd8; border-radius: 4px; margin-bottom: 15px; }
+        .admin-access { border: 1px solid #d6e4f0; }
+        .admin-access form { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+        .admin-access label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: #666; flex: 1 1 280px; }
+        .admin-access input { padding: 10px; border: 1px solid #cbd5df; border-radius: 4px; font: inherit; }
+        .admin-access .hint { color: #666; font-size: 13px; margin-bottom: 15px; }
+        .admin-access .status { margin-top: 10px; font-size: 13px; }
     </style>
 </head>
 <body>
@@ -42,6 +48,18 @@
             <h1>🎯 Ticket Classifier Admin Dashboard</h1>
             <p>Monitor classifications, review low-confidence tickets, and view audit logs</p>
         </header>
+
+        <div class="section admin-access">
+            <h2>Admin access</h2>
+            <p class="hint">Enter the server's admin token to load audit data. It is kept only in this page's memory and is cleared on refresh.</p>
+            <form id="admin-auth-form">
+                <label for="admin-token">Admin token
+                    <input id="admin-token" type="password" autocomplete="off" spellcheck="false" required>
+                </label>
+                <button type="submit">Connect</button>
+            </form>
+            <div id="admin-auth-status" class="status" aria-live="polite"></div>
+        </div>
 
         <div class="tabs">
             <button class="tab active" data-tab="dashboard">Dashboard</button>
@@ -63,7 +81,7 @@
                     </div>
                     <div class="stat-box">
                         <div class="value" id="low-conf-count">0</div>
-                        <div class="label">Low Confidence (&lt;65%)</div>
+                        <div class="label">Review Queue (up to 1,000)</div>
                     </div>
                 </div>
             </div>
@@ -78,7 +96,7 @@
         <div id="low-confidence" class="tab-content">
             <div class="section">
                 <h2>Tickets Requiring Review</h2>
-                <p style="margin-bottom: 15px; color: #666; font-size: 14px;">These tickets have low classification confidence and may need manual review.</p>
+                <p style="margin-bottom: 15px; color: #666; font-size: 14px;">These tickets have low confidence or were explicitly routed for manual review.</p>
                 <button onclick="loadLowConfidenceTickets()">Refresh</button>
                 <ul class="ticket-list" id="low-conf-tickets" style="margin-top: 15px;">
                     <li class="loading">Loading low-confidence tickets...</li>
@@ -99,6 +117,8 @@
     </div>
 
     <script>
+        let adminToken = '';
+
         function escapeHtml(value) {
             const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
             return String(value ?? '').replace(/[&<>"']/g, character => entities[character]);
@@ -112,6 +132,28 @@
         function errorMessage(error) {
             return escapeHtml(error instanceof Error ? error.message : 'Request failed');
         }
+
+        function adminFetch(url, options = {}) {
+            const headers = { ...(options.headers || {}) };
+            if (adminToken) headers['X-Admin-Token'] = adminToken;
+            return fetch(url, { ...options, headers });
+        }
+
+        async function readAdminResponse(response) {
+            let data = {};
+            try { data = await response.json(); } catch (_) { /* handled below */ }
+            if (response.ok) return data;
+            if (response.status === 401) throw new Error('Enter a valid admin token.');
+            if (response.status === 503) throw new Error('Admin access is not configured on this server.');
+            throw new Error(data.detail || 'Admin request failed.');
+        }
+
+        document.getElementById('admin-auth-form').addEventListener('submit', event => {
+            event.preventDefault();
+            adminToken = document.getElementById('admin-token').value;
+            document.getElementById('admin-auth-status').textContent = 'Checking admin access...';
+            loadDashboard();
+        });
 
         // Tab switching
         document.querySelectorAll('.tab').forEach(tab => {
@@ -131,11 +173,12 @@
         function loadDashboard() {
             loadStatus();
             loadRecentTickets();
+            loadReviewCount();
         }
 
         function loadStatus() {
-            fetch('/verify-ollama-connection')
-                .then(r => r.json())
+            adminFetch('/verify-ollama-connection')
+                .then(readAdminResponse)
                 .then(data => {
                     const status = data.connected ? '✓ Connected' : '✗ Disconnected';
                     const color = data.connected ? '#27ae60' : '#e74c3c';
@@ -152,8 +195,8 @@
         }
 
         function loadRecentTickets() {
-            fetch('/audit-logs?limit=5')
-                .then(r => r.json())
+            adminFetch('/audit-logs?limit=5')
+                .then(readAdminResponse)
                 .then(data => {
                     document.getElementById('total-classified').textContent = data.total;
                     const tickets = data.logs || [];
@@ -175,18 +218,27 @@
                     }).join('') : '<li class="loading">No classifications yet</li>';
                     document.getElementById('recent-tickets').innerHTML = html;
                     
-                    // Count low confidence
-                    const lowConf = tickets.filter(t => confidencePercent(t.classification && t.classification.confidence) < 65).length;
-                    document.getElementById('low-conf-count').textContent = lowConf;
                 })
                 .catch(e => {
                     document.getElementById('recent-tickets').innerHTML = `<li class="error">Error: ${errorMessage(e)}</li>`;
                 });
         }
 
+        function loadReviewCount() {
+            adminFetch('/low-confidence-tickets?threshold=0.65&limit=1000')
+                .then(readAdminResponse)
+                .then(data => {
+                    document.getElementById('low-conf-count').textContent = data.count ?? 0;
+                    document.getElementById('admin-auth-status').textContent = 'Admin access granted.';
+                })
+                .catch(e => {
+                    document.getElementById('admin-auth-status').textContent = errorMessage(e);
+                });
+        }
+
         function loadLowConfidenceTickets() {
-            fetch('/low-confidence-tickets?threshold=0.65&limit=50')
-                .then(r => r.json())
+            adminFetch('/low-confidence-tickets?threshold=0.65&limit=50')
+                .then(readAdminResponse)
                 .then(data => {
                     const tickets = data.tickets || [];
                     const html = tickets.length ? tickets.map(log => {
@@ -213,8 +265,8 @@
         }
 
         function loadAuditLogs() {
-            fetch('/audit-logs?limit=50')
-                .then(r => r.json())
+            adminFetch('/audit-logs?limit=50')
+                .then(readAdminResponse)
                 .then(data => {
                     const logs = data.logs || [];
                     const html = logs.length ? logs.map(log => {

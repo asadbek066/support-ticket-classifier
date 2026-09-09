@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -26,6 +25,16 @@ class UiSecurityTests(unittest.TestCase):
         self.assertNotIn("${data.category}", html)
         self.assertNotIn("${data.queue}", html)
         self.assertNotIn("${data.reason", html)
+
+    def test_admin_dashboard_uses_in_memory_token_for_protected_requests(self):
+        html = (ROOT / "app" / "admin.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="admin-token"', html)
+        self.assertIn("let adminToken = ''", html)
+        self.assertIn("function adminFetch", html)
+        self.assertIn("X-Admin-Token", html)
+        self.assertNotIn("localStorage.setItem", html)
+        self.assertNotIn("sessionStorage.setItem", html)
 
 
 if __name__ == "__main__":
