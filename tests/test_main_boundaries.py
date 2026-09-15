@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
 from app.main import app, classify_batch, runtime_config, safe_api_url
 from app.schemas import BatchClassificationRequest, Ticket
@@ -61,6 +62,19 @@ class MainBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "configuration unavailable"):
             runtime_config({"ollama": {"model": ["not-a-model"]}})
 
+    def test_non_ascii_admin_token_is_refused_without_a_server_error(self):
+        token = "t" * 32
+        with patch.dict(os.environ, {"TICKET_CLASSIFIER_ADMIN_TOKEN": token}):
+            from app.main import require_admin_token
+
+            with self.assertRaises(HTTPException) as raised:
+                require_admin_token(admin_token="π" * 32)
+
+        self.assertEqual(raised.exception.status_code, 401)
+        self.assertEqual(
+            raised.exception.detail, "admin authentication required"
+        )
+
 
 class BatchBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_batch_deadline_returns_review_fallbacks_for_remaining_tickets(self):
@@ -86,6 +100,23 @@ class BatchBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 result.reason == "classification unavailable"
                 for result in response.results
             )
+        )
+
+    async def test_batch_yields_exactly_one_result_per_ticket_when_audit_fails(self):
+        request = BatchClassificationRequest(
+            tickets=[Ticket(subject="first"), Ticket(subject="second")]
+        )
+
+        with patch(
+            "app.main.generate_classification",
+            return_value={"category": "Billing", "confidence": 0.9},
+        ), patch("app.main.log_classification", side_effect=OSError("disk full")):
+            response = await classify_batch(request)
+
+        self.assertEqual(response.total, 2)
+        self.assertEqual(len(response.results), 2)
+        self.assertTrue(
+            all(result.reason == "classification unavailable" for result in response.results)
         )
 
 
