@@ -97,6 +97,7 @@ def require_admin_token(
     if (
         expected is None
         or not 16 <= len(expected) <= MAX_ADMIN_TOKEN_CHARS
+        or not expected.isascii()
         or any(
             ord(character) < 0x20 or ord(character) == 0x7F for character in expected
         )
@@ -105,6 +106,7 @@ def require_admin_token(
     if (
         admin_token is None
         or len(admin_token) > MAX_ADMIN_TOKEN_CHARS
+        or not admin_token.isascii()
         or not hmac.compare_digest(admin_token, expected)
     ):
         raise HTTPException(
@@ -230,8 +232,8 @@ async def classify_batch(req: BatchClassificationRequest):
                         generate_classification, ticket_data, categories, model, api_url
                     )
                     result = rules.apply(ticket_data, model_out)
-                    results.append(ClassificationResponse(**result))
                     log_classification(ticket_data, result)
+                    results.append(ClassificationResponse(**result))
                 except Exception as exc:  # noqa: BLE001
                     # One malformed/provider-failed item must not discard the rest of a batch.
                     log_failure("batch_classification_item_failed", exc)
