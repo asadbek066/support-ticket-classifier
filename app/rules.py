@@ -16,8 +16,22 @@ class RulesEngine:
             raise TypeError("Rules configuration must be a YAML mapping")
         self.cfg = loaded
 
-    def apply(self, ticket: dict, model_out: object) -> dict:
-        rules = self.cfg.get("rules", {})
+    def snapshot(self) -> dict:
+        """Return the active config mapping for a single request generation."""
+        return self.cfg
+
+    def configured_categories(self, config: dict | None = None) -> list[str]:
+        """Return the category allow-list from a config snapshot."""
+        values = (self.cfg if config is None else config).get("categories")
+        if not isinstance(values, list):
+            return []
+        return [item for item in values if isinstance(item, str)]
+
+    def apply(self, ticket: dict, model_out: object, config: dict | None = None) -> dict:
+        # One snapshot per call: a concurrent reload must not let a single
+        # classification read fields from two different config generations.
+        cfg = self.cfg if config is None else config
+        rules = cfg.get("rules", {})
         if not isinstance(rules, dict):
             rules = {}
         raw_forced = rules.get("forced_human_review_categories", [])
@@ -39,7 +53,7 @@ class RulesEngine:
         if not math.isfinite(enterprise_boost):
             enterprise_boost = 0.0
 
-        queue_map = self.cfg.get("queue_map", {})
+        queue_map = cfg.get("queue_map", {})
         if not isinstance(queue_map, dict):
             queue_map = {}
         queue_map = {
@@ -47,11 +61,12 @@ class RulesEngine:
             for key, value in queue_map.items()
             if isinstance(key, str) and isinstance(value, str) and value.strip()
         }
-        configured_categories = self.cfg.get("categories")
-        category_values = (
-            configured_categories if isinstance(configured_categories, list) else []
+        raw_categories = cfg.get("categories")
+        categories = (
+            [item for item in raw_categories if isinstance(item, str)]
+            if isinstance(raw_categories, list)
+            else []
         )
-        categories = [item for item in category_values if isinstance(item, str)]
         enforce_categories = bool(categories)
         fallback_category = "Other / Needs Review"
 
