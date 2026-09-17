@@ -81,7 +81,7 @@
                     </div>
                     <div class="stat-box">
                         <div class="value" id="low-conf-count">0</div>
-                        <div class="label">Review Queue (up to 1,000)</div>
+                        <div class="label">Review Queue</div>
                     </div>
                 </div>
             </div>
@@ -180,8 +180,15 @@
             adminFetch('/verify-ollama-connection')
                 .then(readAdminResponse)
                 .then(data => {
-                    const status = data.connected ? '✓ Connected' : '✗ Disconnected';
-                    const color = data.connected ? '#27ae60' : '#e74c3c';
+                    let status = '✗ Disconnected';
+                    let color = '#e74c3c';
+                    if (data.connected && data.model_available === false) {
+                        status = '⚠ Server up, model missing';
+                        color = '#e67e22';
+                    } else if (data.connected) {
+                        status = '✓ Connected';
+                        color = '#27ae60';
+                    }
                     document.getElementById('status-info').innerHTML = `
                         <div style="color: ${color}; font-weight: 500;">${status}</div>
                         <div style="font-size: 12px; color: #666; margin-top: 5px;">
@@ -225,7 +232,7 @@
         }
 
         function loadReviewCount() {
-            adminFetch('/low-confidence-tickets?threshold=0.65&limit=1000')
+            adminFetch('/low-confidence-count?threshold=0.65')
                 .then(readAdminResponse)
                 .then(data => {
                     document.getElementById('low-conf-count').textContent = data.count ?? 0;
