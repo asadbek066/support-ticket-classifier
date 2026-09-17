@@ -36,6 +36,12 @@ class UiSecurityTests(unittest.TestCase):
         self.assertNotIn("localStorage.setItem", html)
         self.assertNotIn("sessionStorage.setItem", html)
 
+    def test_admin_dashboard_counts_review_queue_without_fetching_entries(self):
+        html = (ROOT / "app" / "admin.html").read_text(encoding="utf-8")
+
+        self.assertIn("/low-confidence-count?threshold=0.65", html)
+        self.assertNotIn("/low-confidence-tickets?threshold=0.65&limit=1000", html)
+
 
 if __name__ == "__main__":
     unittest.main()
