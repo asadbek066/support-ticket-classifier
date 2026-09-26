@@ -104,6 +104,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/classify" -Method Post -ContentTyp
 ## Notes
 
 - Classification quality depends on prompt/model quality and configured rules.
+- Ticket fields are treated as untrusted prompt data. Explicit attempts to change classification instructions go to `Other / Needs Review`; text with common security-incident indicators is routed to `Security Concerns` even if the model selects another category. These deterministic checks are conservative safety nets, not complete detectors.
 - `POST /classify` is bounded to 90 seconds and each batch item to 60 seconds
   inside the 120-second batch budget; timed-out calls are reported and audited
   as `Other / Needs Review` rather than failing the request. Audit writes are
@@ -112,6 +113,12 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/classify" -Method Post -ContentTyp
   classification runs a real model call, keep batches small enough for the
   model's throughput (the 100-ticket schema maximum is a hard cap, not a
   latency promise).
+- At most four Ollama calls run concurrently per process. Timed-out requests
+  close their HTTP client; additional calls use the human-review fallback.
+  Loopback, private-use `.internal`, and private-IP Ollama calls bypass
+  environment proxies so ticket text stays on the local route. Configured
+  hostnames otherwise follow environment proxy settings; add custom private DNS
+  names to `NO_PROXY` when they must be reached directly.
 - `/classify-batch` returns a `degraded` count alongside `results`; degraded
   entries are persisted to the audit log so dashboard totals match the
   responses the caller received.
@@ -120,9 +127,15 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/classify" -Method Post -ContentTyp
   liveness.
 - Audit-log responses are newest-first; malformed or oversized JSONL records
   are ignored so one damaged record cannot hide later decisions. Audit writes
-  are best effort: a failed write is logged and the classification still
-  returns, so monitor the service log if audit durability matters. Counts are
-  maintained incrementally per file and reads scan from the newest entries.
+  are best effort and limited to two concurrent writes on a separate executor:
+  a failed or saturated write is logged and classification still returns, so
+  monitor the service log if audit durability matters. On POSIX systems, the
+  audit directory and files are restricted to the service account (`0700` and
+  `0600`). Counts are maintained incrementally per file and reads scan from the
+  newest entries. On Windows, restrict the `audit_logs` directory ACL to the
+  service account and protect its parent directory against replacement by
+  other accounts before running with real ticket data; the service does not
+  rewrite NTFS ACLs.
 - Configuration is cached by file mtime/size. A malformed or missing config
   keeps the last known good configuration active until `/reload-config`
   succeeds; prompt categories and rule validation always use the same rules

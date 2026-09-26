@@ -86,7 +86,7 @@ class BatchBoundaryTests(unittest.IsolatedAsyncioTestCase):
             tickets=[Ticket(subject="first"), Ticket(subject="second")]
         )
 
-        def slow_provider(*_args):
+        def slow_provider(*_args, **_kwargs):
             time.sleep(0.05)
             return {"category": "Billing", "confidence": 0.9}
 

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 import threading
@@ -63,7 +64,7 @@ class ClassifyEndpointTests(unittest.TestCase):
         audit.assert_called_once()
 
     def test_classify_timeout_returns_review_fallback(self):
-        def slow_provider(*_args):
+        def slow_provider(*_args, **_kwargs):
             time.sleep(0.05)
             return {"category": "Billing & Payments", "confidence": 0.9}
 
@@ -157,6 +158,110 @@ class AuditBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.category, "Billing & Payments")
         self.assertLess(elapsed, 1.0)
+
+    async def test_stalled_audit_writer_does_not_occupy_inference_executor(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        release = threading.Event()
+        started = threading.Event()
+        finished = threading.Event()
+        loop = asyncio.get_running_loop()
+        inference_executor = ThreadPoolExecutor(max_workers=1)
+        loop.set_default_executor(inference_executor)
+
+        def blocking_audit(*_args):
+            started.set()
+            release.wait(5.0)
+            finished.set()
+
+        try:
+            with (
+                patch("app.main.log_classification", side_effect=blocking_audit),
+                patch("app.main.AUDIT_WRITE_TIMEOUT_SECONDS", 0.02),
+            ):
+                await main._audit_classification({}, {})
+                self.assertTrue(started.wait(1.0))
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: "inference executor is available"),
+                    timeout=0.1,
+                )
+                self.assertEqual(result, "inference executor is available")
+        finally:
+            release.set()
+            await asyncio.to_thread(finished.wait, 1.0)
+            inference_executor.shutdown(wait=True)
+
+class ProviderTimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_classify_timeout_closes_slow_header_connection(self):
+        import socketserver
+        import time
+
+        from app.ollama_client import MAX_CONCURRENT_PROVIDER_CALLS, ProviderCall
+
+        started = threading.Event()
+        server_finished = threading.Event()
+        stop_stream = threading.Event()
+
+        class SlowHeaderHandler(socketserver.BaseRequestHandler):
+            def handle(self):
+                try:
+                    self.request.recv(64 * 1024)
+                    self.request.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+                    started.set()
+                    for _ in range(100):
+                        if stop_stream.wait(0.03):
+                            break
+                        self.request.sendall(b"a")
+                    self.request.sendall(
+                        b"\r\nContent-Type: application/json\r\n"
+                        b"Content-Length: 2\r\n\r\n{}"
+                    )
+                except OSError:
+                    pass
+                finally:
+                    server_finished.set()
+
+        server = socketserver.ThreadingTCPServer(
+            ("127.0.0.1", 0), SlowHeaderHandler
+        )
+        server.daemon_threads = True
+        server.block_on_close = False
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        url = f"http://127.0.0.1:{server.server_address[1]}/api/generate"
+
+        try:
+            with (
+                patch("app.main._provider_settings", return_value=("model", url)),
+                patch("app.main.CLASSIFY_TIMEOUT_SECONDS", 0.25),
+                patch("app.main.log_classification"),
+            ):
+                result = await main.classify(Ticket(subject="Payment failed"))
+
+            self.assertEqual(result.category, "Other / Needs Review")
+            self.assertTrue(result.human_review)
+            self.assertTrue(started.wait(1.0))
+            self.assertTrue(server_finished.wait(1.0))
+
+            deadline = time.monotonic() + 1.0
+            admitted_count = 0
+            while time.monotonic() < deadline:
+                controls = [
+                    ProviderCall()
+                    for _ in range(MAX_CONCURRENT_PROVIDER_CALLS + 1)
+                ]
+                admitted_count = sum(control.admitted for control in controls)
+                for control in controls:
+                    control.cancel()
+                if admitted_count == MAX_CONCURRENT_PROVIDER_CALLS:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(admitted_count, MAX_CONCURRENT_PROVIDER_CALLS)
+        finally:
+            stop_stream.set()
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=1.0)
 
 
 class HealthAndHeadersTests(unittest.TestCase):

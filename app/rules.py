@@ -1,7 +1,28 @@
 import math
+import re
 from pathlib import Path
 
 import yaml
+
+SECURITY_SIGNAL_RE = re.compile(
+    r"\b(?:security (?:incident|concerns?|breach|vulnerability)|data breach|"
+    r"hacked|compromised|phishing|malware|ransomware|unauthori[sz]ed access|"
+    r"unauthori[sz]ed login|account takeover|credential theft|suspicious login|"
+    r"someone logged into my account|somebody logged into my account|"
+    r"unrecognized (?:device|login|location)|unrecognised (?:device|login|location)|"
+    r"unfamiliar (?:device|login|location)|unknown (?:device|login|location)|"
+    r"(?:device|login|location).{0,40}\b(?:i|we)\s+(?:do not|don['’]t)\s+recognize|"
+    r"changed (?:my |the )?recovery (?:email|phone))\b",
+    re.IGNORECASE | re.DOTALL,
+)
+PROMPT_OVERRIDE_RE = re.compile(
+    r"\b(?:ignore|disregard|forget|override|bypass)\b.{0,80}"
+    r"\b(?:instructions?|rules?|prompt|directive|policy)\b|"
+    r"\b(?:set|mark|change|route|classify|place|send|assign|select)\b.{0,60}"
+    r"\b(?:confidence|certainty|human_review|review|queue|category)\b|"
+    r"\bdo not (?:flag|review|escalate)\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class RulesEngine:
@@ -40,7 +61,7 @@ class RulesEngine:
 
         try:
             threshold = float(rules.get("confidence_threshold", 0.65))
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             threshold = 0.65
         if not math.isfinite(threshold):
             threshold = 0.65
@@ -48,7 +69,7 @@ class RulesEngine:
 
         try:
             enterprise_boost = float(rules.get("enterprise_confidence_boost", 0.0))
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             enterprise_boost = 0.0
         if not math.isfinite(enterprise_boost):
             enterprise_boost = 0.0
@@ -71,21 +92,48 @@ class RulesEngine:
         fallback_category = "Other / Needs Review"
 
         output = model_out if isinstance(model_out, dict) else {}
+        ticket_text = " ".join(
+            value for value in ticket.values() if isinstance(value, str)
+        )
+        security_signal = bool(SECURITY_SIGNAL_RE.search(ticket_text))
+        prompt_override_signal = bool(PROMPT_OVERRIDE_RE.search(ticket_text))
         raw_category = output.get("category")
         category = raw_category.strip() if isinstance(raw_category, str) else ""
         invalid_category = not category or (
             enforce_categories and category not in categories
         )
-        if invalid_category:
+        if security_signal:
+            security_category = next(
+                (
+                    value
+                    for value in categories
+                    if value.casefold() == "security concerns"
+                ),
+                None,
+            )
+            category = security_category or fallback_category
+            invalid_category = security_category is None
+        elif prompt_override_signal:
+            category = fallback_category
+            invalid_category = True
+        elif invalid_category:
             category = fallback_category
 
-        raw_confidence = output.get("confidence", 0.0)
-        try:
-            confidence = float(raw_confidence)
-        except (TypeError, ValueError):
+        raw_confidence = output.get("confidence")
+        invalid_confidence = isinstance(raw_confidence, bool) or not isinstance(
+            raw_confidence, (int, float)
+        )
+        if invalid_confidence:
             confidence = 0.0
+        else:
+            try:
+                confidence = float(raw_confidence)
+            except (OverflowError, TypeError, ValueError):
+                confidence = 0.0
+                invalid_confidence = True
         if not math.isfinite(confidence):
             confidence = 0.0
+            invalid_confidence = True
         if (
             isinstance(ticket.get("customer_type"), str)
             and ticket["customer_type"].lower() == "enterprise"
@@ -95,12 +143,23 @@ class RulesEngine:
 
         raw_human_review = output.get("human_review")
         human_review = raw_human_review if isinstance(raw_human_review, bool) else True
-        if invalid_category or category in forced or confidence < threshold:
+        if (
+            invalid_category
+            or category in forced
+            or confidence < threshold
+            or security_signal
+            or prompt_override_signal
+            or invalid_confidence
+        ):
             human_review = True
 
         reason = output.get("reason", "")
         if not isinstance(reason, str):
             reason = ""
+        if security_signal:
+            reason = "Potential security issue detected; routed for human review."
+        elif prompt_override_signal:
+            reason = "Ticket included classification instructions; routed for human review."
         queue = queue_map.get(category, "triage")
         return {
             "category": category,
