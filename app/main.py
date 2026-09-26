@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic
 from urllib.parse import urlsplit
@@ -23,6 +24,7 @@ from app.audit import (
     read_audit_logs,
 )
 from app.ollama_client import (
+    ProviderCall,
     check_ollama_connection,
     generate_classification,
     is_provider_fallback,
@@ -45,6 +47,7 @@ BATCH_TIMEOUT_SECONDS = 120.0
 BATCH_ITEM_TIMEOUT_SECONDS = 60.0
 CLASSIFY_TIMEOUT_SECONDS = 90.0
 AUDIT_WRITE_TIMEOUT_SECONDS = 5.0
+MAX_CONCURRENT_AUDIT_WRITES = 2
 MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -65,6 +68,11 @@ rules = RulesEngine(str(CONFIG_PATH))
 
 _CONFIG_LOCK = threading.Lock()
 _CONFIG_CACHE: dict[str, object] = {}
+_AUDIT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=MAX_CONCURRENT_AUDIT_WRITES,
+    thread_name_prefix="ticket-audit",
+)
+_AUDIT_ADMISSION = threading.BoundedSemaphore(MAX_CONCURRENT_AUDIT_WRITES)
 
 
 def load_config() -> dict:
@@ -222,15 +230,61 @@ def _unavailable_classification() -> ClassificationResponse:
 
 async def _audit_classification(ticket_data: dict, result: dict) -> None:
     """Persist an audit entry without discarding a completed classification."""
+    if not _AUDIT_ADMISSION.acquire(blocking=False):
+        log_failure("audit_write_saturated", RuntimeError("audit writer is busy"))
+        return
+    try:
+        future = _AUDIT_EXECUTOR.submit(log_classification, ticket_data, result)
+    except Exception as exc:  # noqa: BLE001 - classification is more important
+        _AUDIT_ADMISSION.release()
+        log_failure("audit_write_failed", exc)
+        return
+    future.add_done_callback(lambda _future: _AUDIT_ADMISSION.release())
     try:
         await asyncio.wait_for(
-            asyncio.to_thread(log_classification, ticket_data, result),
-            timeout=AUDIT_WRITE_TIMEOUT_SECONDS,
+            asyncio.wrap_future(future), timeout=AUDIT_WRITE_TIMEOUT_SECONDS
         )
     except TimeoutError:
         log_failure("audit_write_timeout", TimeoutError("audit write timed out"))
     except Exception as exc:  # noqa: BLE001 - audit storage is best effort
         log_failure("audit_write_failed", exc)
+
+
+async def _generate_with_timeout(
+    ticket_data: dict,
+    categories: list[str],
+    model: str,
+    api_url: str,
+    timeout: float,
+) -> dict:
+    """Run one bounded Ollama call and close its client if the caller expires."""
+    request_control = ProviderCall()
+    if not request_control.admitted:
+        LOGGER.warning("ollama_request_limit_reached")
+        return provider_fallback()
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                generate_classification,
+                ticket_data,
+                categories,
+                model,
+                api_url,
+                request_control=request_control,
+            ),
+            timeout=timeout,
+        )
+    except (TimeoutError, asyncio.CancelledError):
+        request_control.cancel()
+        raise
+    except Exception:
+        request_control.cancel()
+        raise
+    finally:
+        # If the thread never began (for example, it was cancelled in the
+        # executor queue), release the admission slot here. A running worker
+        # releases it only after closing its client.
+        request_control.release_if_not_started()
 
 
 def _provider_settings() -> tuple[str, str]:
@@ -275,11 +329,8 @@ async def classify(ticket: Ticket):
     model, api_url = _provider_settings()
     ticket_data = ticket.model_dump()
     try:
-        model_out = await asyncio.wait_for(
-            asyncio.to_thread(
-                generate_classification, ticket_data, categories, model, api_url
-            ),
-            timeout=CLASSIFY_TIMEOUT_SECONDS,
+        model_out = await _generate_with_timeout(
+            ticket_data, categories, model, api_url, CLASSIFY_TIMEOUT_SECONDS
         )
     except TimeoutError as exc:
         log_failure("classification_timeout", exc)
@@ -335,15 +386,12 @@ async def classify_batch(req: BatchClassificationRequest):
             degraded += 1
         else:
             try:
-                model_out = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        generate_classification,
-                        ticket_data,
-                        categories,
-                        model,
-                        api_url,
-                    ),
-                    timeout=min(BATCH_ITEM_TIMEOUT_SECONDS, remaining),
+                model_out = await _generate_with_timeout(
+                    ticket_data,
+                    categories,
+                    model,
+                    api_url,
+                    min(BATCH_ITEM_TIMEOUT_SECONDS, remaining),
                 )
                 result = rules.apply(ticket_data, model_out, config)
                 if is_provider_fallback(model_out):

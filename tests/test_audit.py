@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -179,6 +181,52 @@ class AuditWriteTests(unittest.TestCase):
             self.assertEqual(name, "classifications-2030-01-01.jsonl")
             entry = json.loads((root / name).read_text(encoding="utf-8"))
             self.assertTrue(entry["timestamp"].startswith("2030-01-01"))
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permission bits required")
+    def test_audit_storage_permissions_are_private_even_for_existing_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "audit"
+            root.mkdir(mode=0o755)
+            old_umask = os.umask(0)
+            try:
+                with patch("app.audit.AUDIT_LOG_DIR", root):
+                    log_name = log_classification(
+                        {"subject": "private ticket"}, {"category": "Billing"}
+                    )
+                    log_file = root / log_name
+                    self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
+                    self.assertEqual(stat.S_IMODE(log_file.stat().st_mode), 0o600)
+
+                    root.chmod(0o755)
+                    log_file.chmod(0o644)
+                    log_classification(
+                        {"subject": "another ticket"}, {"category": "Billing"}
+                    )
+
+                    self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
+                    self.assertEqual(stat.S_IMODE(log_file.stat().st_mode), 0o600)
+            finally:
+                os.umask(old_umask)
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "no-follow opens required")
+    def test_audit_writer_does_not_follow_a_log_file_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "audit"
+            root.mkdir()
+            target = Path(directory) / "outside.jsonl"
+            target.write_text("leave unchanged\n", encoding="utf-8")
+            log_name = f"classifications-{datetime.now(UTC).strftime('%Y-%m-%d')}.jsonl"
+            (root / log_name).symlink_to(target)
+
+            with (
+                patch("app.audit.AUDIT_LOG_DIR", root),
+                self.assertRaises(OSError),
+            ):
+                log_classification(
+                    {"subject": "private ticket"}, {"category": "Billing"}
+                )
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "leave unchanged\n")
 
 
 class AuditCountTests(unittest.TestCase):

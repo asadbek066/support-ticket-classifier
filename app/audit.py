@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,6 +10,8 @@ MAX_AUDIT_LINE_BYTES = 128 * 1024
 TAIL_CHUNK_BYTES = 64 * 1024
 FINGERPRINT_BYTES = 64
 MAX_CACHED_THRESHOLDS = 16
+AUDIT_DIRECTORY_MODE = 0o700
+AUDIT_FILE_MODE = 0o600
 
 # Per-file incremental counters. Audit files are append-only, so counts are
 # advanced by parsing only the bytes appended since the last call. The lock
@@ -18,7 +21,9 @@ _FILE_STATS: dict[Path, dict] = {}
 
 
 def ensure_audit_dir() -> None:
-    AUDIT_LOG_DIR.mkdir(exist_ok=True)
+    AUDIT_LOG_DIR.mkdir(mode=AUDIT_DIRECTORY_MODE, exist_ok=True)
+    if os.name == "posix":
+        os.chmod(AUDIT_LOG_DIR, AUDIT_DIRECTORY_MODE)
 
 
 def log_classification(
@@ -33,8 +38,25 @@ def log_classification(
         "overrides": overrides or {},
     }
     log_file = AUDIT_LOG_DIR / f"classifications-{now.strftime('%Y-%m-%d')}.jsonl"
-    with open(log_file, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    if log_file.is_symlink():
+        raise OSError("audit log path must not be a symlink")
+    descriptor = os.open(
+        log_file,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_APPEND
+        | getattr(os, "O_NOFOLLOW", 0),
+        AUDIT_FILE_MODE,
+    )
+    try:
+        if os.name == "posix":
+            os.fchmod(descriptor, AUDIT_FILE_MODE)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as f:
+            descriptor = -1
+            f.write(json.dumps(entry) + "\n")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     return log_file.name
 
 
