@@ -6,7 +6,12 @@ import yaml
 
 SECURITY_SIGNAL_RE = re.compile(
     r"\b(?:security (?:incident|concerns?|breach|vulnerability)|data breach|"
-    r"hacked|compromised|got into (?:my )?account|phishing|malware|ransomware|"
+    r"hacked|compromised|(?:got into|accessed) "
+    r"(?:(?:my|our|your|their|the|this|that|an?) )?"
+    r"(?:(?:work|business|company|personal|merchant|payout|payroll) )?accounts?|"
+    r"gained access to (?:(?:my|our|your|their|the|this|that|an?) )?"
+    r"(?:(?:work|business|company|personal|merchant|payout|payroll) )?accounts?|"
+    r"phishing|malware|ransomware|"
     r"unauthori[sz]ed access|"
     r"unauthori[sz]ed login|account takeover|credential theft|suspicious login|"
     r"someone logged into my account|somebody logged into my account|"
