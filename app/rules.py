@@ -6,15 +6,20 @@ import yaml
 
 SECURITY_SIGNAL_RE = re.compile(
     r"\b(?:security (?:incident|concerns?|breach|vulnerability)|data breach|"
-    r"hacked|compromised|(?:got into|accessed) "
+    r"hacked|compromised|"
+    r"(?:got into|accessed|broke into|took over|took control of|hijacked) "
     r"(?:(?:my|our|your|their|the|this|that|an?) )?"
     r"(?:(?:work|business|company|personal|merchant|payout|payroll) )?accounts?|"
-    r"gained access to (?:(?:my|our|your|their|the|this|that|an?) )?"
+    r"(?:gained|got) access to (?:(?:my|our|your|their|the|this|that|an?) )?"
     r"(?:(?:work|business|company|personal|merchant|payout|payroll) )?accounts?|"
     r"phishing|malware|ransomware|"
     r"unauthori[sz]ed access|"
     r"unauthori[sz]ed login|account takeover|credential theft|suspicious login|"
-    r"someone logged into my account|somebody logged into my account|"
+    r"(?:someone|somebody) (?:logged|signed) in(?:to| to) "
+    r"(?:(?:my|our|your|their|the|this|that|an?) )?"
+    r"(?:(?:work|business|company|personal|merchant|payout|payroll) )?accounts?|"
+    r"accounts? (?:was|were|got|has been|have been|had been) "
+    r"(?:taken over|hijacked)|"
     r"unrecognized (?:device|login|location)|unrecognised (?:device|login|location)|"
     r"unfamiliar (?:device|login|location)|unknown (?:device|login|location)|"
     r"(?:device|login|location).{0,40}\b(?:i|we)\s+(?:do not|don['’]t)\s+recognize|"
@@ -24,6 +29,8 @@ SECURITY_SIGNAL_RE = re.compile(
 PROMPT_OVERRIDE_RE = re.compile(
     r"\b(?:ignore|disregard|forget|override|bypass)\b.{0,80}"
     r"\b(?:instructions?|rules?|prompt|directive|policy)\b|"
+    r"\b(?:confidence|certainty|human_review|review|queue|category)\b.{0,40}"
+    r"\b(?:should|must|needs? to|has to)\b|"
     r"\b(?:set|mark|change|route|classify|place|send|assign|select)\b.{0,60}"
     r"\b(?:confidence|certainty|human_review|review|queue|category)\b|"
     r"\bdo not (?:flag|review|escalate)\b",
