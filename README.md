@@ -154,8 +154,10 @@ keep them on a trusted network (see below). Three bounds are available:
 - Provider queue (`provider_queue:`), described in the Notes below.
 - Optional shared secret: set `TICKET_CLASSIFIER_CLASSIFY_TOKEN` (16 to 256
   ASCII characters) and callers must send it in `X-Classify-Token` (constant
-  time comparison, `401` otherwise; a set but too-short value answers `503`).
-  Unset leaves the endpoints open. The built-in `/test` page has a
+  time comparison, `401` otherwise; a variable that is set but empty, blank, or too short answers `503` on
+  the classify endpoints and logs an error at startup, so a templating mistake
+  cannot silently leave them open).
+  Only an unset variable leaves the endpoints open. The built-in `/test` page has a
   "Classify token" field (held in page memory only, like the admin token on
   `/`) and sends the header when filled; a `401` shows a clear message. Recommended whenever the service
   is reachable by anything other than the trusted caller.

@@ -89,6 +89,12 @@ _ACTIVE: "ActiveConfig | None" = None
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if classify_token_misconfigured():
+        LOGGER.error(
+            "%s is set but empty, too short, or invalid; classify endpoints "
+            "answer 503 until it is fixed or the variable is unset",
+            CLASSIFY_TOKEN_ENV,
+        )
     try:
         await asyncio.to_thread(startup_prune)
     except Exception as exc:  # noqa: BLE001 - housekeeping must not block startup
@@ -255,16 +261,27 @@ def require_admin_token(
         )
 
 
+def classify_token_misconfigured() -> bool:
+    expected = os.getenv(CLASSIFY_TOKEN_ENV)
+    return expected is not None and (
+        not expected.strip()
+        or not 16 <= len(expected) <= MAX_ADMIN_TOKEN_CHARS
+        or not expected.isascii()
+        or any(ord(c) < 0x20 or ord(c) == 0x7F for c in expected)
+    )
+
+
 def require_classify_token(
     classify_token: str | None = Header(default=None, alias="X-Classify-Token"),
 ) -> None:
     """Optional shared secret for the classify endpoints (off unless configured)."""
 
     expected = os.getenv(CLASSIFY_TOKEN_ENV)
-    if not expected:
+    if expected is None:
         return
     if (
-        not 16 <= len(expected) <= MAX_ADMIN_TOKEN_CHARS
+        not expected.strip()
+        or not 16 <= len(expected) <= MAX_ADMIN_TOKEN_CHARS
         or not expected.isascii()
         or any(
             ord(character) < 0x20 or ord(character) == 0x7F for character in expected
