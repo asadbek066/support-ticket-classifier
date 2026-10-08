@@ -144,6 +144,30 @@ class ClassifyTokenTests(unittest.TestCase):
                 200,
             )
 
+    def test_empty_or_blank_token_fails_closed(self):
+        for value in ("", "   ", " " * 20):
+            with self.subTest(value=value), patch.dict(
+                os.environ, {main.CLASSIFY_TOKEN_ENV: value}
+            ):
+                self.assertTrue(main.classify_token_misconfigured())
+                self.assertEqual(post_one(self.client).status_code, 503)
+                self.assertEqual(
+                    self.client.post(
+                        "/classify-batch", json={"tickets": [{"subject": "a"}]}
+                    ).status_code,
+                    503,
+                )
+
+    def test_startup_logs_error_for_empty_token(self):
+        async def run():
+            async with main.lifespan(main.app):
+                pass
+
+        with patch.dict(os.environ, {main.CLASSIFY_TOKEN_ENV: ""}), patch(
+            "app.main.startup_prune"
+        ), self.assertLogs("app.main", level="ERROR"):
+            asyncio.run(run())
+
     def test_weak_configured_token_fails_closed(self):
         with patch.dict(os.environ, {main.CLASSIFY_TOKEN_ENV: "short"}):
             self.assertEqual(post_one(self.client).status_code, 503)
