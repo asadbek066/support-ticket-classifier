@@ -86,7 +86,7 @@ queue_map:
   Security Concerns: security-ops
 rules:
   confidence_threshold: 0.65
-  enterprise_confidence_boost: 0.1
+  enterprise_confidence_boost: 0.1  # stale key; must be ignored
   forced_human_review_categories:
     - Security Concerns
 """,
@@ -105,39 +105,26 @@ rules:
             self.engine.configured_categories(), ["Billing", "Security Concerns"]
         )
 
-    def test_enterprise_boost_can_lift_a_result_above_the_threshold(self):
-        result = self._apply(
-            {"customer_type": "enterprise"},
-            {
-                "category": "Billing",
-                "confidence": 0.6,
-                "human_review": False,
-            },
-        )
+    def test_borderline_ticket_is_reviewed_regardless_of_customer_type(self):
+        # customer_type is caller-supplied and unauthenticated; it must never
+        # raise confidence or suppress review, even if a stale config still
+        # carries enterprise_confidence_boost.
+        for customer_type in ("enterprise", "ENTERPRISE", "free", "paid", "", None):
+            with self.subTest(customer_type=customer_type):
+                result = self._apply(
+                    {"customer_type": customer_type},
+                    {"category": "Billing", "confidence": 0.6, "human_review": False},
+                )
+                self.assertAlmostEqual(result["confidence"], 0.6)
+                self.assertTrue(result["human_review"])
 
-        self.assertAlmostEqual(result["confidence"], 0.7)
-        self.assertFalse(result["human_review"])
-
-    def test_below_threshold_without_boost_requires_review(self):
+    def test_below_threshold_requires_review(self):
         result = self._apply(
             {"customer_type": "free"},
             {"category": "Billing", "confidence": 0.6, "human_review": False},
         )
 
         self.assertAlmostEqual(result["confidence"], 0.6)
-        self.assertTrue(result["human_review"])
-
-    def test_exact_case_boost_only_applies_to_enterprise(self):
-        result = self._apply(
-            {"customer_type": "ENTERPRISE"},
-            {"category": "Billing", "confidence": 0.6, "human_review": False},
-        )
-        self.assertFalse(result["human_review"])
-
-        result = self._apply(
-            {"customer_type": "enterprise-ish"},
-            {"category": "Billing", "confidence": 0.6, "human_review": False},
-        )
         self.assertTrue(result["human_review"])
 
     def test_forced_category_always_requires_review(self):
