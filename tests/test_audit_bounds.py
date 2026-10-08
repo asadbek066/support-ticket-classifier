@@ -158,6 +158,32 @@ class PruneTests(AuditBoundsBase):
         self.assertEqual(removed, [])
         self.assertTrue((self.root / TODAY).exists())
 
+    def test_symlinked_audit_directory_is_never_pruned(self):
+        target = self.root / "real"
+        target.mkdir()
+        victim = target / "classifications-2001-01-01.jsonl"
+        victim.write_text("keep")
+        link = self.root / "link"
+        os.symlink(target, link)
+        with patch("app.audit.AUDIT_LOG_DIR", link), patch.object(
+            audit, "_UNSAFE_WARNED", set()
+        ), self.assertLogs("app.audit", level="ERROR") as logs:
+            first = prune_audit_files(AuditSettings(retention_days=1), now=NOW)
+            second = prune_audit_files(AuditSettings(retention_days=1), now=NOW)
+        self.assertEqual((first, second), ([], []))
+        self.assertTrue(victim.exists())
+        self.assertEqual(len(logs.records), 1)
+
+    def test_directory_owned_by_someone_else_is_never_pruned(self):
+        old = self.make("classifications-2001-01-01.jsonl")
+        with patch("app.audit.os.getuid", return_value=os.getuid() + 1), patch.object(
+            audit, "_UNSAFE_WARNED", set()
+        ), self.assertLogs("app.audit", level="ERROR"):
+            self.assertEqual(
+                prune_audit_files(AuditSettings(retention_days=1), now=NOW), []
+            )
+        self.assertTrue(old.exists())
+
     def test_current_file_is_kept_even_when_expired_by_the_clock(self):
         # "now" is far in the future, so today's file is older than retention.
         future = datetime(2027, 1, 1, tzinfo=UTC)
