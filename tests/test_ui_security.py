@@ -36,6 +36,15 @@ class UiSecurityTests(unittest.TestCase):
         self.assertNotIn("localStorage.setItem", html)
         self.assertNotIn("sessionStorage.setItem", html)
 
+    def test_test_page_sends_optional_classify_token_from_memory_only(self):
+        html = (ROOT / "app" / "test.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="classify-token"', html)
+        self.assertIn("X-Classify-Token", html)
+        self.assertIn("response.status === 401", html)
+        self.assertNotIn("localStorage", html)
+        self.assertNotIn("sessionStorage", html)
+
     def test_admin_dashboard_counts_review_queue_without_fetching_entries(self):
         html = (ROOT / "app" / "admin.html").read_text(encoding="utf-8")
 

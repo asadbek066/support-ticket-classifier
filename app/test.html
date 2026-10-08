@@ -55,6 +55,11 @@
         <div class="form-section">
             <form id="testForm">
                 <div class="form-group">
+                    <label for="classify-token">Classify token (only if the server requires one)</label>
+                    <input type="password" id="classify-token" autocomplete="off" spellcheck="false">
+                    <p class="hint">Kept only in this page's memory and cleared on refresh.</p>
+                </div>
+                <div class="form-group">
                     <label for="subject">Ticket Subject *</label>
                     <input type="text" id="subject" name="subject" placeholder="e.g., Payment failed on invoice" required>
                 </div>
@@ -183,9 +188,12 @@
             resultContainer.classList.add('active');
 
             try {
+                const classifyToken = document.getElementById('classify-token').value;
+                const headers = { 'Content-Type': 'application/json' };
+                if (classifyToken) headers['X-Classify-Token'] = classifyToken;
                 const response = await fetch('/classify', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers,
                     body: JSON.stringify({
                         subject,
                         description,
@@ -195,6 +203,15 @@
                     })
                 });
 
+                if (response.status === 401) {
+                    throw new Error('This server requires a classify token. Enter a valid token above.');
+                }
+                if (response.status === 503) {
+                    throw new Error('The server reports a configuration problem (HTTP 503).');
+                }
+                if (response.status === 429) {
+                    throw new Error('Rate limit exceeded. Wait a moment and try again.');
+                }
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}`);
                 }
