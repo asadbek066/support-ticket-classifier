@@ -16,6 +16,17 @@ from app.audit import (
 )
 
 
+_KEY_TEMP = tempfile.TemporaryDirectory()
+
+
+def setUpModule():
+    # Never create the HMAC key file in the repository during tests.
+    patcher = patch("app.audit.DEFAULT_KEY_PATH", Path(_KEY_TEMP.name) / "k.key")
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+    unittest.addModuleCleanup(_KEY_TEMP.cleanup)
+
+
 class AuditReadTests(unittest.TestCase):
     def test_limit_returns_newest_valid_entries_within_newest_file(self):
         with tempfile.TemporaryDirectory() as directory:

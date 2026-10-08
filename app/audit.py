@@ -1,9 +1,11 @@
 import hashlib
+import hmac
 import json
 import logging
 import math
 import os
 import re
+import secrets
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -21,6 +23,8 @@ MAX_CACHED_THRESHOLDS = 16
 AUDIT_DIRECTORY_MODE = 0o700
 AUDIT_FILE_MODE = 0o600
 
+DEFAULT_KEY_PATH = Path(__file__).resolve().parents[1] / "audit_hmac.key"
+DIGEST_SCHEME = "hmac-sha256"
 AUDIT_FILE_RE = re.compile(r"classifications-(\d{4}-\d{2}-\d{2})\.jsonl")
 MEGABYTE = 1024 * 1024
 TICKET_TEXT_LIMIT = 20_000
@@ -36,6 +40,7 @@ class AuditSettings:
     max_total_bytes: int = 200 * MEGABYTE
     max_daily_bytes: int = 20 * MEGABYTE
     prune_interval_seconds: float = 3600.0
+    hash_key_file: str | None = None  # None: DEFAULT_KEY_PATH
 
 
 def settings_from_config(config: Mapping[str, object]) -> AuditSettings:
@@ -56,6 +61,7 @@ def settings_from_config(config: Mapping[str, object]) -> AuditSettings:
         "max_total_mb",
         "max_daily_mb",
         "prune_interval_seconds",
+        "hash_key_file",
     }
     unknown = set(raw) - known
     if unknown:
@@ -75,7 +81,13 @@ def settings_from_config(config: Mapping[str, object]) -> AuditSettings:
     store_full = raw.get("store_full_text", defaults.store_full_text)
     if not isinstance(store_full, bool):
         raise ValueError("audit.store_full_text must be true or false")
+    key_file = raw.get("hash_key_file")
+    if key_file is not None and (
+        not isinstance(key_file, str) or not key_file.strip() or len(key_file) > 500
+    ):
+        raise ValueError("audit.hash_key_file must be a non-empty path string")
     return AuditSettings(
+        hash_key_file=key_file,
         max_text_chars=number(
             "max_text_chars", defaults.max_text_chars, 0, TICKET_TEXT_LIMIT, True
         ),
@@ -151,28 +163,102 @@ def _record_drop(day: str) -> None:
         )
 
 
+_KEY_LOCK = threading.Lock()
+_KEY_CACHE: dict[Path, bytes | None] = {}
+_KEY_WARNED: set[Path] = set()
+
+
+def _key_path(settings: AuditSettings) -> Path:
+    if settings.hash_key_file is None:
+        return DEFAULT_KEY_PATH
+    path = Path(settings.hash_key_file).expanduser()
+    return path if path.is_absolute() else DEFAULT_KEY_PATH.parent / path
+
+
+def _load_or_create_key(path: Path) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        descriptor = -1
+    if descriptor < 0:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        new = secrets.token_hex(32)
+        try:
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                AUDIT_FILE_MODE,
+            )
+        except FileExistsError:  # another worker created it first
+            return _load_or_create_key(path)
+        with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+            handle.write(new + "\n")
+        return bytes.fromhex(new)
+    with os.fdopen(descriptor, "r", encoding="ascii") as handle:
+        value = handle.read().strip()
+    key = bytes.fromhex(value)
+    if len(key) < 32:
+        raise ValueError("audit hash key is too short")
+    return key
+
+
+def _digest_key(settings: AuditSettings) -> bytes | None:
+    """Per-installation HMAC key, or None (logged once) if unavailable."""
+    path = _key_path(settings)
+    with _KEY_LOCK:
+        if path in _KEY_CACHE:
+            return _KEY_CACHE[path]
+        try:
+            directory = AUDIT_LOG_DIR.resolve()
+            if path.resolve().is_relative_to(directory):
+                raise ValueError("audit hash key must live outside the audit directory")
+            key = _load_or_create_key(path)
+        except (OSError, ValueError) as exc:
+            key = None
+            if path not in _KEY_WARNED:
+                _KEY_WARNED.add(path)
+                LOGGER.error(
+                    "audit_hash_key_unavailable (%s); ticket digests are omitted",
+                    type(exc).__name__,
+                )
+        # A failed lookup is not cached, so a fixed key file is picked up.
+        if key is not None:
+            _KEY_CACHE[path] = key
+        return key
+
+
 def _bounded_ticket(ticket: dict, settings: AuditSettings) -> dict:
-    """Return the ticket as stored: text truncated, with hash and length."""
+    """Return the ticket as stored: text truncated, with keyed hash and length."""
     if settings.store_full_text:
         stored = dict(ticket)
     else:
         stored = {}
+    secret = _digest_key(settings)
     digests: dict[str, dict] = {}
     truncated: list[str] = []
-    for key, value in ticket.items():
+    for field, value in ticket.items():
         if not isinstance(value, str):
             if not settings.store_full_text:
-                stored[key] = value
+                stored[field] = value
             continue
-        digests[key] = {
-            "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
-            "chars": len(value),
-        }
+        digests[field] = {"chars": len(value)}
+        if secret is not None:
+            digests[field]["hmac"] = hmac.new(
+                secret, value.encode("utf-8"), hashlib.sha256
+            ).hexdigest()
         if not settings.store_full_text:
             if len(value) > settings.max_text_chars:
-                truncated.append(key)
-            stored[key] = value[: settings.max_text_chars]
-    return {"ticket": stored, "ticket_digest": digests, "truncated_fields": truncated}
+                truncated.append(field)
+            stored[field] = value[: settings.max_text_chars]
+    record = {
+        "ticket": stored,
+        "ticket_digest": digests,
+        "truncated_fields": truncated,
+    }
+    if secret is not None:
+        record["digest_scheme"] = DIGEST_SCHEME
+    return record
 
 
 def _audit_candidates(directory: Path) -> list[tuple[date, str, int]]:

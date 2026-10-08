@@ -37,6 +37,7 @@ wheels/
 
 # Project specific
 audit_logs/
+audit_hmac.key
 *.jsonl
 .pytest_cache/
 htmlcov/

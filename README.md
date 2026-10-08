@@ -123,10 +123,17 @@ under the `audit:` section of `config.yaml` (applied at startup and on
 
 Stored per ticket by default: the first 300 characters of each text field
 (`subject`, `description`, `source_channel`, `customer_type`, `language`),
-`ticket_digest` (SHA-256 and original character count of each full field, so a
-record can be matched to the original ticket), and `truncated_fields`. The
-digest of a short or empty field is also stored. Records written before this
-change contain full text and stay readable; they age out with retention.
+`ticket_digest` (for each full field its original character count and an
+HMAC-SHA-256 under a per-installation secret), `digest_scheme`
+(`hmac-sha256`) and `truncated_fields`. The HMAC key is generated on first use
+and stored with mode `0600` in `audit_hmac.key` in the project root (outside
+`audit_logs/`; override with `audit.hash_key_file`). Equal text hashes equally
+within one installation, but a digest cannot be guessed against from the log
+alone; do not back the key up together with the logs. If the key cannot be
+created or read, digests are omitted (never replaced by an unsalted hash) and
+an error is logged once. Records from the earlier build carry an unkeyed
+`sha256` field instead and no `digest_scheme`; they stay readable. Records
+written before truncation existed contain full text and age out with retention.
 
 Retention only touches regular files named `classifications-YYYY-MM-DD.jsonl`
 directly inside the audit directory (symlinks and other files are ignored) and
