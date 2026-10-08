@@ -101,6 +101,38 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/classify" -Method Post -ContentTyp
 - forced human-review categories
 - Ollama model and API URL
 
+## Audit log storage
+
+Every classification appends one JSON line to
+`audit_logs/classifications-YYYY-MM-DD.jsonl` (UTC date). Each record holds the
+timestamp, the classification result, and the ticket fields. Defaults, all
+under the `audit:` section of `config.yaml` (applied at startup and on
+`/reload-config`):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `max_text_chars` | 300 | Stored characters per ticket text field; the rest is discarded. |
+| `store_full_text` | false | `true` stores complete ticket text (up to 20,000 characters per ticket, in plaintext). |
+| `retention_days` | 30 | Files whose date is older are deleted. |
+| `max_total_mb` | 200 | Total size of audit files; oldest files are deleted first. |
+| `max_daily_mb` | 20 | Per-day file cap; once reached, further records that day are dropped. |
+| `prune_interval_seconds` | 3600 | Retention runs at startup and at most this often during writes. |
+
+Stored per ticket by default: the first 300 characters of each text field
+(`subject`, `description`, `source_channel`, `customer_type`, `language`),
+`ticket_digest` (SHA-256 and original character count of each full field, so a
+record can be matched to the original ticket), and `truncated_fields`. The
+digest of a short or empty field is also stored. Records written before this
+change contain full text and stay readable; they age out with retention.
+
+Retention only touches regular files named `classifications-YYYY-MM-DD.jsonl`
+directly inside the audit directory (symlinks and other files are ignored) and
+never deletes the file being written. When the daily cap is hit the request is
+still classified; the record is dropped, one warning is logged per process per
+day, and `GET /audit-logs` reports `dropped_today` and `dropped_total`
+(counted per process since start). Invalid `audit:` values make `/reload-config`
+fail rather than silently weaken a bound.
+
 ## Notes
 
 - Classification quality depends on prompt/model quality and configured rules.
@@ -144,7 +176,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/classify" -Method Post -ContentTyp
   hash-pinned uv lock, so recompile the lock when accepting a dependency bump.
 - Request bodies are capped at 8 MB, and responses carry `no-store` plus
   `nosniff`/`DENY`/CSP headers.
-- For production, keep audit logs and configuration changes under version control and configure retention outside the service.
+- Audit retention is built in (see "Audit log storage"); keep configuration changes under version control and apply any stricter organisational retention outside the service.
 
 ## Security and operating boundary
 

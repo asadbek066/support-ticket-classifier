@@ -1,9 +1,17 @@
+import hashlib
 import json
+import logging
 import math
 import os
+import re
 import threading
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from time import monotonic
+
+LOGGER = logging.getLogger(__name__)
 
 AUDIT_LOG_DIR = Path(__file__).resolve().parents[1] / "audit_logs"
 MAX_AUDIT_LINE_BYTES = 128 * 1024
@@ -12,6 +20,256 @@ FINGERPRINT_BYTES = 64
 MAX_CACHED_THRESHOLDS = 16
 AUDIT_DIRECTORY_MODE = 0o700
 AUDIT_FILE_MODE = 0o600
+
+AUDIT_FILE_RE = re.compile(r"classifications-(\d{4}-\d{2}-\d{2})\.jsonl")
+MEGABYTE = 1024 * 1024
+TICKET_TEXT_LIMIT = 20_000
+
+
+@dataclass(frozen=True)
+class AuditSettings:
+    """Bounds for what the audit log stores and how long it keeps it."""
+
+    max_text_chars: int = 300
+    store_full_text: bool = False
+    retention_days: int = 30
+    max_total_bytes: int = 200 * MEGABYTE
+    max_daily_bytes: int = 20 * MEGABYTE
+    prune_interval_seconds: float = 3600.0
+
+
+def settings_from_config(config: Mapping[str, object]) -> AuditSettings:
+    """Build validated settings from the optional ``audit`` config section.
+
+    Raises ValueError for any invalid value so a bad edit is rejected as a
+    whole rather than silently weakening a bound.
+    """
+    raw = config.get("audit")
+    if raw is None:
+        return AuditSettings()
+    if not isinstance(raw, Mapping):
+        raise ValueError("audit must be a mapping")
+    known = {
+        "max_text_chars",
+        "store_full_text",
+        "retention_days",
+        "max_total_mb",
+        "max_daily_mb",
+        "prune_interval_seconds",
+    }
+    unknown = set(raw) - known
+    if unknown:
+        raise ValueError(f"unknown audit settings: {sorted(map(str, unknown))}")
+    defaults = AuditSettings()
+
+    def number(key, default, low, high, integer=False):
+        value = raw.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"audit.{key} must be a number")
+        if integer and not isinstance(value, int):
+            raise ValueError(f"audit.{key} must be an integer")
+        if not math.isfinite(value) or not low <= value <= high:
+            raise ValueError(f"audit.{key} must be between {low} and {high}")
+        return value
+
+    store_full = raw.get("store_full_text", defaults.store_full_text)
+    if not isinstance(store_full, bool):
+        raise ValueError("audit.store_full_text must be true or false")
+    return AuditSettings(
+        max_text_chars=number(
+            "max_text_chars", defaults.max_text_chars, 0, TICKET_TEXT_LIMIT, True
+        ),
+        store_full_text=store_full,
+        retention_days=number(
+            "retention_days", defaults.retention_days, 1, 3650, True
+        ),
+        max_total_bytes=int(
+            number("max_total_mb", defaults.max_total_bytes / MEGABYTE, 1, 1_000_000)
+            * MEGABYTE
+        ),
+        max_daily_bytes=int(
+            number("max_daily_mb", defaults.max_daily_bytes / MEGABYTE, 1, 100_000)
+            * MEGABYTE
+        ),
+        prune_interval_seconds=float(
+            number(
+                "prune_interval_seconds",
+                defaults.prune_interval_seconds,
+                1,
+                30 * 86400,
+            )
+        ),
+    )
+
+
+_SETTINGS = AuditSettings()
+_STATE_LOCK = threading.Lock()
+_DROPPED_BY_DAY: dict[str, int] = {}
+_DROPPED_TOTAL = 0
+_WARNED_DAYS: set[str] = set()
+_LAST_PRUNE: float | None = None
+
+
+def configure(settings: AuditSettings) -> None:
+    """Swap the active settings atomically (called at startup and on reload)."""
+    global _SETTINGS
+    _SETTINGS = settings
+
+
+def get_settings() -> AuditSettings:
+    return _SETTINGS
+
+
+def drop_stats(now: datetime | None = None) -> dict:
+    """Records dropped since process start because the daily cap was reached."""
+    day = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
+    with _STATE_LOCK:
+        return {
+            "dropped_today": _DROPPED_BY_DAY.get(day, 0),
+            "dropped_total": _DROPPED_TOTAL,
+        }
+
+
+def _record_drop(day: str) -> None:
+    global _DROPPED_TOTAL
+    with _STATE_LOCK:
+        _DROPPED_BY_DAY[day] = _DROPPED_BY_DAY.get(day, 0) + 1
+        _DROPPED_TOTAL += 1
+        # Keep the per-day map from growing for the life of the process.
+        for old in sorted(_DROPPED_BY_DAY)[:-7]:
+            del _DROPPED_BY_DAY[old]
+        first = day not in _WARNED_DAYS
+        if first:
+            _WARNED_DAYS.add(day)
+            for old in sorted(_WARNED_DAYS)[:-7]:
+                _WARNED_DAYS.discard(old)
+    if first:
+        LOGGER.warning(
+            "audit_daily_cap_reached: further records for %s are dropped "
+            "(classification continues)",
+            day,
+        )
+
+
+def _bounded_ticket(ticket: dict, settings: AuditSettings) -> dict:
+    """Return the ticket as stored: text truncated, with hash and length."""
+    if settings.store_full_text:
+        stored = dict(ticket)
+    else:
+        stored = {}
+    digests: dict[str, dict] = {}
+    truncated: list[str] = []
+    for key, value in ticket.items():
+        if not isinstance(value, str):
+            if not settings.store_full_text:
+                stored[key] = value
+            continue
+        digests[key] = {
+            "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+            "chars": len(value),
+        }
+        if not settings.store_full_text:
+            if len(value) > settings.max_text_chars:
+                truncated.append(key)
+            stored[key] = value[: settings.max_text_chars]
+    return {"ticket": stored, "ticket_digest": digests, "truncated_fields": truncated}
+
+
+def _audit_candidates(directory: Path) -> list[tuple[date, str, int]]:
+    """Regular files in the audit dir matching the filename pattern.
+
+    Symlinks and everything else are ignored, never followed or deleted.
+    """
+    found = []
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return found
+    for entry in entries:
+        match = AUDIT_FILE_RE.fullmatch(entry.name)
+        if match is None:
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                continue
+            file_date = date.fromisoformat(match.group(1))
+            size = entry.stat(follow_symlinks=False).st_size
+        except (OSError, ValueError):
+            continue
+        found.append((file_date, entry.name, size))
+    return sorted(found)
+
+
+def prune_audit_files(
+    settings: AuditSettings | None = None,
+    now: datetime | None = None,
+    current_name: str | None = None,
+) -> list[str]:
+    """Delete expired files, then oldest files until under the size cap."""
+    settings = settings or _SETTINGS
+    now = now or datetime.now(UTC)
+    if current_name is None:
+        current_name = f"classifications-{now.strftime('%Y-%m-%d')}.jsonl"
+    directory = AUDIT_LOG_DIR
+    cutoff = now.date() - timedelta(days=settings.retention_days)
+    removed: list[str] = []
+    remaining = []
+    for file_date, name, size in _audit_candidates(directory):
+        if name != current_name and file_date < cutoff:
+            if _unlink(directory / name):
+                removed.append(name)
+                continue
+        remaining.append((file_date, name, size))
+    total = sum(size for _, _, size in remaining)
+    for _, name, size in remaining:
+        if total <= settings.max_total_bytes:
+            break
+        if name == current_name:
+            continue
+        if _unlink(directory / name):
+            removed.append(name)
+            total -= size
+    if removed:
+        with _STATS_LOCK:
+            for name in removed:
+                _FILE_STATS.pop(directory / name, None)
+        LOGGER.info("audit_pruned files=%d", len(removed))
+    return removed
+
+
+def _unlink(path: Path) -> bool:
+    try:
+        os.unlink(path)  # unlink never follows a symlink target
+        return True
+    except OSError as exc:
+        LOGGER.warning("audit_prune_failed (%s)", type(exc).__name__)
+        return False
+
+
+def _maybe_prune(settings: AuditSettings, current_name: str) -> None:
+    """Prune at most once per interval; the first call in a process runs."""
+    global _LAST_PRUNE
+    with _STATE_LOCK:
+        moment = monotonic()
+        if (
+            _LAST_PRUNE is not None
+            and moment - _LAST_PRUNE < settings.prune_interval_seconds
+        ):
+            return
+        _LAST_PRUNE = moment
+    try:
+        prune_audit_files(settings, current_name=current_name)
+    except Exception as exc:  # noqa: BLE001 - never fail a write over housekeeping
+        LOGGER.warning("audit_prune_failed (%s)", type(exc).__name__)
+
+
+def startup_prune() -> None:
+    """Prune once at service start and restart the interval clock."""
+    global _LAST_PRUNE
+    with _STATE_LOCK:
+        _LAST_PRUNE = monotonic()
+    prune_audit_files(_SETTINGS)
+
 
 # Per-file incremental counters. Audit files are append-only, so counts are
 # advanced by parsing only the bytes appended since the last call. The lock
@@ -30,16 +288,19 @@ def log_classification(
     ticket: dict, result: dict, overrides: dict | None = None
 ) -> str:
     ensure_audit_dir()
+    settings = _SETTINGS
     now = datetime.now(UTC)
     entry = {
         "timestamp": now.isoformat(),
-        "ticket": ticket,
+        **_bounded_ticket(ticket, settings),
         "classification": result,
         "overrides": overrides or {},
     }
-    log_file = AUDIT_LOG_DIR / f"classifications-{now.strftime('%Y-%m-%d')}.jsonl"
+    day = now.strftime("%Y-%m-%d")
+    log_file = AUDIT_LOG_DIR / f"classifications-{day}.jsonl"
     if log_file.is_symlink():
         raise OSError("audit log path must not be a symlink")
+    line = json.dumps(entry) + "\n"
     descriptor = os.open(
         log_file,
         os.O_WRONLY
@@ -51,12 +312,16 @@ def log_classification(
     try:
         if os.name == "posix":
             os.fchmod(descriptor, AUDIT_FILE_MODE)
-        with os.fdopen(descriptor, "a", encoding="utf-8") as f:
-            descriptor = -1
-            f.write(json.dumps(entry) + "\n")
+        if os.fstat(descriptor).st_size >= settings.max_daily_bytes:
+            _record_drop(day)
+        else:
+            with os.fdopen(descriptor, "a", encoding="utf-8") as f:
+                descriptor = -1
+                f.write(line)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+    _maybe_prune(settings, log_file.name)
     return log_file.name
 
 

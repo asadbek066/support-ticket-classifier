@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 from collections.abc import Mapping
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic
@@ -17,7 +18,11 @@ from starlette.datastructures import MutableHeaders
 from starlette.middleware.body_limit import RequestBodyLimitMiddleware
 
 from app.audit import (
+    configure as configure_audit,
     count_audit_logs,
+    drop_stats,
+    settings_from_config,
+    startup_prune,
     count_low_confidence_tickets,
     get_low_confidence_tickets,
     log_classification,
@@ -63,8 +68,23 @@ NO_STORE_PATHS = {"/", "/test"}
 # the API's default-src 'self' policy.
 CSP_EXEMPT_PATHS = {"/docs", "/redoc", "/openapi.json"}
 
-app = FastAPI(title="Ticket Classifier")
 rules = RulesEngine(str(CONFIG_PATH))
+try:
+    configure_audit(settings_from_config(rules.snapshot()))
+except ValueError as _exc:
+    LOGGER.error("audit_config_invalid (%s); using safe defaults", _exc)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        await asyncio.to_thread(startup_prune)
+    except Exception as exc:  # noqa: BLE001 - housekeeping must not block startup
+        log_failure("audit_startup_prune_failed", exc)
+    yield
+
+
+app = FastAPI(title="Ticket Classifier", lifespan=lifespan)
 
 _CONFIG_LOCK = threading.Lock()
 _CONFIG_CACHE: dict[str, object] = {}
@@ -349,6 +369,7 @@ async def classify(ticket: Ticket):
 def reload_config():
     try:
         rules.reload()
+        configure_audit(settings_from_config(rules.snapshot()))
         return {"status": "ok"}
     except Exception as exc:
         log_failure("config_reload_failed", exc)
@@ -423,7 +444,7 @@ async def classify_batch(req: BatchClassificationRequest):
 def get_audit_logs(limit: int = Query(default=100, ge=1, le=1000)):
     try:
         logs = read_audit_logs(limit=limit)
-        return {"total": count_audit_logs(), "logs": logs}
+        return {"total": count_audit_logs(), "logs": logs, **drop_stats()}
     except Exception as exc:
         log_failure("audit_read_failed", exc)
         raise HTTPException(status_code=500, detail="audit logs unavailable") from exc

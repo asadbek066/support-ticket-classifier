@@ -27,3 +27,13 @@ rules:
 ollama:
   model: deepseek-r1:1.5b
   api_url: http://localhost:11434/api/generate
+
+# Audit log bounds. Records keep a truncated copy of each ticket text field plus
+# the full-text SHA-256 and length; see README "Audit log storage".
+audit:
+  max_text_chars: 300          # per ticket text field; 0 stores no ticket text
+  store_full_text: false       # true stores complete ticket text (privacy risk)
+  retention_days: 30           # delete audit files older than this
+  max_total_mb: 200            # total audit directory cap; oldest files go first
+  max_daily_mb: 20             # per-day file cap; further records are dropped
+  prune_interval_seconds: 3600 # retention sweep at most this often during writes

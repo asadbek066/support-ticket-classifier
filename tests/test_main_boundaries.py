@@ -37,7 +37,10 @@ class MainBoundaryTests(unittest.TestCase):
                 response = client.get("/audit-logs", headers={"X-Admin-Token": token})
 
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json(), {"total": 0, "logs": []})
+            self.assertEqual(
+                response.json(),
+                {"total": 0, "logs": [], "dropped_today": 0, "dropped_total": 0},
+            )
 
     def test_audit_response_reports_total_beyond_requested_page(self):
         token = "t" * 32
