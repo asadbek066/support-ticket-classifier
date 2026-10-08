@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 import httpx
 import yaml
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.datastructures import MutableHeaders
 from starlette.middleware.body_limit import RequestBodyLimitMiddleware
 
@@ -301,23 +301,55 @@ def require_classify_token(
         )
 
 
-def _charge(request: Request, cost: int) -> None:
-    client = request.client.host if request.client else "unknown"
-    retry_after = _LIMITER.check(client, cost)
-    if retry_after:
-        raise HTTPException(
-            status_code=429,
-            detail="rate limit exceeded",
-            headers={"Retry-After": str(retry_after)},
-        )
+def _client_key(scope) -> str:
+    client = scope.get("client")
+    return client[0] if client else "unknown"
 
 
-def rate_limit_single(request: Request) -> None:
-    _charge(request, 1)
+def _too_many(retry_after: int) -> JSONResponse:
+    return JSONResponse(
+        {"detail": "rate limit exceeded"},
+        status_code=429,
+        headers={"Retry-After": str(retry_after)},
+    )
 
 
-def rate_limit_batch(request: Request, req: BatchClassificationRequest) -> None:
-    _charge(request, len(req.tickets))
+def rate_limit_batch_remainder(request: Request, req: BatchClassificationRequest) -> None:
+    """A valid batch pays for its other tickets; the first was charged up front."""
+    extra = len(req.tickets) - 1
+    if extra > 0:
+        retry_after = _LIMITER.check(_client_key(request.scope), extra)
+        if retry_after:
+            raise HTTPException(
+                status_code=429,
+                detail="rate limit exceeded",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+
+class RateLimitMiddleware:
+    """Charge one token per classify request before the body is parsed.
+
+    Doing this ahead of validation means malformed or oversized bodies spend
+    tokens like any other request on both endpoints.
+    """
+
+    PATHS = {"/classify", "/classify-batch"}
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "POST"
+            and scope.get("path") in self.PATHS
+        ):
+            retry_after = _LIMITER.check(_client_key(scope), 1)
+            if retry_after:
+                await _too_many(retry_after)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 class SecurityHeadersMiddleware:
@@ -479,7 +511,7 @@ def _mark_busy(result: dict, model_out: object) -> dict:
 @app.post(
     "/classify",
     response_model=ClassificationResponse,
-    dependencies=[Depends(require_classify_token), Depends(rate_limit_single)],
+    dependencies=[Depends(require_classify_token)],
 )
 async def classify(ticket: Ticket):
     # Prompt categories and rule validation share one config snapshot so a
@@ -532,7 +564,10 @@ def verify_ollama():
 @app.post(
     "/classify-batch",
     response_model=BatchClassificationResponse,
-    dependencies=[Depends(require_classify_token), Depends(rate_limit_batch)],
+    dependencies=[
+        Depends(require_classify_token),
+        Depends(rate_limit_batch_remainder),
+    ],
 )
 async def classify_batch(req: BatchClassificationRequest):
     start = monotonic()
@@ -624,4 +659,5 @@ def get_low_confidence_count(
 # Body limits are added first so the security-header middleware wraps the
 # early 413 response; both still run before request parsing.
 app.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_REQUEST_BODY_BYTES)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
