@@ -133,6 +133,28 @@ day, and `GET /audit-logs` reports `dropped_today` and `dropped_total`
 (counted per process since start). Invalid `audit:` values make `/reload-config`
 fail rather than silently weaken a bound.
 
+## Abuse controls for the classify endpoints
+
+`/classify` and `/classify-batch` do not require authentication by default;
+keep them on a trusted network (see below). Three bounds are available:
+
+- Per-client rate limit (on by default, `rate_limit:` in `config.yaml`): an
+  in-process token bucket keyed on the client address the application sees.
+  Defaults: 300 tickets per minute sustained, burst 200. A batch is charged one
+  token per ticket (so `burst` must be at least 100). Excess requests get `429`
+  with a `Retry-After` header. Limits are per process: with several workers each
+  keeps its own buckets. Behind a reverse proxy the address the app sees is the
+  proxy's, so all users share one bucket unless forwarded headers are
+  configured at the server (for example uvicorn `--proxy-headers` with
+  `--forwarded-allow-ips` set to your proxy only). The app itself never reads
+  `X-Forwarded-For`.
+- Provider queue (`provider_queue:`), described in the Notes below.
+- Optional shared secret: set `TICKET_CLASSIFIER_CLASSIFY_TOKEN` (16 to 256
+  ASCII characters) and callers must send it in `X-Classify-Token` (constant
+  time comparison, `401` otherwise; a set but too-short value answers `503`).
+  Unset or empty leaves the endpoints open. Recommended whenever the service
+  is reachable by anything other than the trusted caller.
+
 ## Notes
 
 - Classification quality depends on prompt/model quality and configured rules.
@@ -146,7 +168,14 @@ fail rather than silently weaken a bound.
   model's throughput (the 100-ticket schema maximum is a hard cap, not a
   latency promise).
 - At most four Ollama calls run concurrently per process. Timed-out requests
-  close their HTTP client; additional calls use the human-review fallback.
+  close their HTTP client. When all four slots are busy, further requests wait
+  in a bounded first-in-first-out queue (`provider_queue.max_depth`, default 32;
+  `provider_queue.max_wait_seconds`, default 30). Only when the queue is full or
+  the wait expires does the call use the human-review fallback, and that
+  fallback is marked: its `reason` is (or starts with) `provider_busy` in the
+  response and the audit record, and batch results count it in `degraded`.
+  The HTTP status stays 200, as for other fallbacks. A request cancelled while
+  queued gives up its place.
   Loopback, private-use `.internal`, and private-IP Ollama calls bypass
   environment proxies so ticket text stays on the local route. Configured
   hostnames otherwise follow environment proxy settings; add custom private DNS

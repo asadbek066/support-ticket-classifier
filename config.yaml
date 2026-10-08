@@ -37,3 +37,14 @@ audit:
   max_total_mb: 200            # total audit directory cap; oldest files go first
   max_daily_mb: 20             # per-day file cap; further records are dropped
   prune_interval_seconds: 3600 # retention sweep at most this often during writes
+
+# Abuse bounds for /classify and /classify-batch (in-process, per worker).
+rate_limit:
+  enabled: true
+  tickets_per_minute: 300      # sustained refill per client address; a batch costs one per ticket
+  burst: 200                   # bucket size; must be >= 100 so one full batch can pass
+  max_clients: 10000           # tracked client addresses (least recently used evicted)
+
+provider_queue:
+  max_depth: 32                # requests allowed to wait when all 4 model slots are busy
+  max_wait_seconds: 30         # then the marked "provider_busy" fallback is returned
