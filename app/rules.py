@@ -26,14 +26,55 @@ SECURITY_SIGNAL_RE = re.compile(
     r"changed (?:my |the )?recovery (?:email|phone))\b",
     re.IGNORECASE | re.DOTALL,
 )
+# Fail-safe detector: a false positive costs a human review, a false negative
+# lets an instruction reach the model, so the original broad shape is kept and
+# only two benign constructions are carved out with narrow lookaheads.
+#
+# Carve-out 1: "review" as a modifier of a customer-facing thing ("review
+# request", "review link", ...).
+# Carve-out 2: "category of/for my|our|your|the <product-ish noun>" when it is
+# not followed by a ticket-ish noun and no "to"/"as" re-assignment follows.
+# Anything aimed at the ticket ("category of my ticket", "of this ticket")
+# still matches.
+# All gaps are bounded ({0,N}); there are no nested unbounded quantifiers.
+_REVIEW = (
+    r"review(?!\s+(?:requests?|links?|pages?|emails?|forms?|invitations?|"
+    r"invites?|widgets?|stars?|scores?|ratings?|sites?|platforms?)\b)"
+)
+_CATEGORY = (
+    r"category(?!\s+(?:of|for)\s+(?:my|our|your|the)\s+"
+    r"(?:(?:product|store|shop|online)\s+)?"
+    r"(?:products?|listings?|items?|stores?|shops?|catalogs?|catalogues?|"
+    r"pages?|inventory|menu)\b"
+    r"(?!\s+(?:tickets?|cases?|requests?|issues?|messages?|inquir\w+)\b)"
+    r"(?![^.\n]{0,40}\b(?:to|as|into)\b))"
+)
+_FIELD = (
+    r"(?:confidence|certainty|human_review|" + _REVIEW + r"|queue|" + _CATEGORY + r")"
+)
 PROMPT_OVERRIDE_RE = re.compile(
     r"\b(?:ignore|disregard|forget|override|bypass)\b.{0,80}"
     r"\b(?:instructions?|rules?|prompt|directive|policy)\b|"
-    r"\b(?:confidence|certainty|human_review|review|queue|category)\b.{0,40}"
+    r"\b" + _FIELD + r"\b.{0,40}"
     r"\b(?:should|must|needs? to|has to)\b|"
     r"\b(?:set|mark|change|route|classify|place|send|assign|select)\b.{0,60}"
-    r"\b(?:confidence|certainty|human_review|review|queue|category)\b|"
-    r"\bdo not (?:flag|review|escalate)\b",
+    r"\b" + _FIELD + r"\b|"
+    r"\bdo not (?:flag|review|escalate)\b|"
+    # Additive coverage: role/system markers and chat-template tokens.
+    r"```\s*(?:system|assistant|developer)\b|"
+    r"###\s*(?:instructions?|system)\b|"
+    r"\[/?(?:system|inst)\]|<\|[a-z_]{1,30}\|>|"
+    r"(?:^|\n)[ \t]*(?:system|assistant|developer)[ \t]*:[ \t]*"
+    r"(?:you|ignore|disregard|forget|new|from now|always|never|set|classify|"
+    r"output|respond|return)\b|"
+    r"\byou are now\b|\bact as (?:a|an|if|the)\b|\bpretend (?:you are|you['’]re|to be)\b|"
+    r"\bnew (?:rules?|instructions?)[ \t]*:|\bsystem (?:prompt|override)\b|"
+    r"\b(?:i )?instruct you\b|\byou must (?:output|respond|return|answer)\b|"
+    r"\brespond only with\b|\bdo not second-guess\b|\boverride[ \t]*:|"
+    r"\b(?:classify|label|categori[sz]e|output)\s+(?:this|it|the ticket)\s+as\b|"
+    r"\bno human review (?:required|needed|necessary)\b|"
+    r"\b(?:all|any)\s+(?:previous|prior|above|earlier)\s+(?:instructions?|rules?|prompts?)\b|"
+    r"\b(?:ignore|disregard|forget)\W+(?:what|everything|anything)\W+you\b",
     re.IGNORECASE | re.DOTALL,
 )
 
