@@ -85,9 +85,42 @@ class RateLimitEndpointTests(unittest.TestCase):
         denied = client.post("/classify-batch", json=batch)
         self.assertEqual(denied.status_code, 429)
         self.assertEqual(denied.headers["retry-after"], "20")  # 20 tokens / 1 per s
-        # 40 tokens remain: a 40-ticket batch passes, then nothing is left.
-        small = {"tickets": [{"subject": "x"}] * 40}
+        # The denied batch still cost its up-front token: 39 remain, so a
+        # 39-ticket batch passes and then nothing is left.
+        small = {"tickets": [{"subject": "x"}] * 39}
         self.assertEqual(client.post("/classify-batch", json=small).status_code, 200)
+        self.assertEqual(post_one(client).status_code, 429)
+
+    def test_invalid_bodies_are_charged_on_both_endpoints(self):
+        bad_bodies = {
+            "/classify": [
+                {"json": {"subject": 5}},
+                {"content": b"{not json", "headers": {"Content-Type": "application/json"}},
+            ],
+            "/classify-batch": [
+                {"json": {"tickets": []}},
+                {"content": b"{not json", "headers": {"Content-Type": "application/json"}},
+            ],
+        }
+        for path, variants in bad_bodies.items():
+            for kwargs in variants:
+                main._LIMITER = TokenBucketLimiter(
+                    RateLimitSettings(tickets_per_minute=60, burst=100),
+                    clock=lambda: 0.0,
+                )
+                client = self.client("10.0.0.7")
+                statuses = [client.post(path, **kwargs).status_code for _ in range(101)]
+                self.assertEqual(set(statuses[:100]), {422}, (path, kwargs))
+                self.assertEqual(statuses[100], 429, (path, kwargs))
+
+    def test_valid_batch_pays_one_up_front_plus_the_rest(self):
+        main._LIMITER = TokenBucketLimiter(
+            RateLimitSettings(tickets_per_minute=60, burst=100), clock=lambda: 0.0
+        )
+        client = self.client("10.0.0.8")
+        batch = {"tickets": [{"subject": "a"}] * 100}
+        self.assertEqual(client.post("/classify-batch", json=batch).status_code, 200)
+        self.assertEqual(main._LIMITER._buckets["10.0.0.8"][0], 0)
         self.assertEqual(post_one(client).status_code, 429)
 
     def test_tokens_refill_over_time(self):

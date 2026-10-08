@@ -143,8 +143,10 @@ keep them on a trusted network (see below). Three bounds are available:
 
 - Per-client rate limit (on by default, `rate_limit:` in `config.yaml`): an
   in-process token bucket keyed on the client address the application sees.
-  Defaults: 300 tickets per minute sustained, burst 200. A batch is charged one
-  token per ticket (so `burst` must be at least 100). Excess requests get `429`
+  Defaults: 300 tickets per minute sustained, burst 200. Every classify request is charged one
+  token before its body is parsed (malformed bodies included); a valid batch is
+  then charged for its remaining tickets, one token per ticket in total (so
+  `burst` must be at least 100). Excess requests get `429`
   with a `Retry-After` header. Limits are per process: with several workers each
   keeps its own buckets. Behind a reverse proxy the address the app sees is the
   proxy's, so all users share one bucket unless forwarded headers are
