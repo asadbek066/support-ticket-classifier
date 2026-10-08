@@ -6,6 +6,7 @@ import threading
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 from urllib.parse import urlsplit
@@ -18,6 +19,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.middleware.body_limit import RequestBodyLimitMiddleware
 
 from app.audit import (
+    AuditSettings,
     configure as configure_audit,
     count_audit_logs,
     drop_stats,
@@ -79,30 +81,10 @@ NO_STORE_PATHS = {"/", "/test"}
 CSP_EXEMPT_PATHS = {"/docs", "/redoc", "/openapi.json"}
 
 rules = RulesEngine(str(CONFIG_PATH))
-try:
-    configure_audit(settings_from_config(rules.snapshot()))
-except ValueError as _exc:
-    LOGGER.error("audit_config_invalid (%s); using safe defaults", _exc)
 
-
-_ABUSE_LOCK = threading.Lock()
 _LIMITER = TokenBucketLimiter(RateLimitSettings())
 _QUEUE_SETTINGS = ProviderQueueSettings()
-
-
-def apply_abuse_settings(config: Mapping[str, object]) -> None:
-    """Validate then install rate-limit and provider-queue settings."""
-    global _LIMITER, _QUEUE_SETTINGS
-    limiter = TokenBucketLimiter(rate_limit_from_config(config))
-    queue = provider_queue_from_config(config)
-    with _ABUSE_LOCK:
-        _LIMITER, _QUEUE_SETTINGS = limiter, queue
-
-
-try:
-    apply_abuse_settings(rules.snapshot())
-except ValueError as _exc:
-    LOGGER.error("abuse_config_invalid (%s); using safe defaults", _exc)
+_ACTIVE: "ActiveConfig | None" = None
 
 
 @asynccontextmanager
@@ -117,7 +99,6 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Ticket Classifier", lifespan=lifespan)
 
 _CONFIG_LOCK = threading.Lock()
-_CONFIG_CACHE: dict[str, object] = {}
 _AUDIT_EXECUTOR = ThreadPoolExecutor(
     max_workers=MAX_CONCURRENT_AUDIT_WRITES,
     thread_name_prefix="ticket-audit",
@@ -125,30 +106,18 @@ _AUDIT_EXECUTOR = ThreadPoolExecutor(
 _AUDIT_ADMISSION = threading.BoundedSemaphore(MAX_CONCURRENT_AUDIT_WRITES)
 
 
-def load_config() -> dict:
-    """Return the parsed config, cached by file mtime/size.
+@dataclass(frozen=True)
+class ActiveConfig:
+    """One validated generation of every config-derived setting."""
 
-    A config that cannot be read or parsed falls back to the last known good
-    value when one exists, so a bad edit cannot take classification down while
-    the operator fixes it. Only the very first load fails hard.
-    """
-    try:
-        stat = CONFIG_PATH.stat()
-    except OSError as exc:
-        LOGGER.error("config_stat_failed (%s)", type(exc).__name__)
-        with _CONFIG_LOCK:
-            cached = _CONFIG_CACHE.get("value")
-        if isinstance(cached, dict):
-            LOGGER.warning("config_using_last_known_good")
-            return cached
-        raise RuntimeError("configuration unavailable") from exc
+    raw: dict
+    audit: AuditSettings
+    rate_limit: RateLimitSettings
+    provider_queue: ProviderQueueSettings
 
-    cache_key = (stat.st_mtime_ns, stat.st_size)
-    with _CONFIG_LOCK:
-        cached = _CONFIG_CACHE.get("value")
-        if _CONFIG_CACHE.get("key") == cache_key and isinstance(cached, dict):
-            return cached
 
+def read_config_file() -> dict:
+    """Read and parse config.yaml; raise RuntimeError if it cannot be used."""
     try:
         with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
             config = yaml.safe_load(config_file)
@@ -156,17 +125,58 @@ def load_config() -> dict:
             raise TypeError("configuration must be a mapping")
     except (OSError, yaml.YAMLError, TypeError) as exc:
         LOGGER.error("config_load_failed (%s)", type(exc).__name__)
-        with _CONFIG_LOCK:
-            cached = _CONFIG_CACHE.get("value")
-        if isinstance(cached, dict):
-            LOGGER.warning("config_using_last_known_good")
-            return cached
+        raise RuntimeError("configuration unavailable") from exc
+    return config
+
+
+def build_active_config(raw: dict) -> ActiveConfig:
+    """Validate every section of a parsed config as a whole."""
+    try:
+        runtime_config(raw)
+        if not isinstance(raw.get("categories", []), list):
+            raise ValueError("categories must be a list")
+        for section in ("rules", "queue_map"):
+            if not isinstance(raw.get(section, {}), dict):
+                raise ValueError(f"{section} must be a mapping")
+        return ActiveConfig(
+            raw=raw,
+            audit=settings_from_config(raw),
+            rate_limit=rate_limit_from_config(raw),
+            provider_queue=provider_queue_from_config(raw),
+        )
+    except ValueError as exc:
+        LOGGER.error("config_invalid (%s)", exc)
         raise RuntimeError("configuration unavailable") from exc
 
+
+def activate_config(active: ActiveConfig) -> None:
+    """Install a validated generation: rules, provider, audit, limits together."""
+    global _ACTIVE, _LIMITER, _QUEUE_SETTINGS
     with _CONFIG_LOCK:
-        _CONFIG_CACHE["key"] = cache_key
-        _CONFIG_CACHE["value"] = config
-    return config
+        rules.cfg = active.raw
+        configure_audit(active.audit)
+        if _LIMITER.settings != active.rate_limit:
+            _LIMITER = TokenBucketLimiter(active.rate_limit)
+        _QUEUE_SETTINGS = active.provider_queue
+        _ACTIVE = active
+
+
+def reload_active_config() -> None:
+    """Re-read config.yaml; on any failure the previous generation stays."""
+    activate_config(build_active_config(read_config_file()))
+
+
+def load_config() -> dict:
+    """Return the active (last successfully loaded) config.
+
+    The file is read only at startup and by /reload-config, so every setting
+    comes from the same generation and a bad edit has no effect until a reload
+    succeeds.
+    """
+    active = _ACTIVE
+    if active is None:
+        raise RuntimeError("configuration unavailable")
+    return active.raw
 
 
 def runtime_config(config: Mapping[str, object]) -> tuple[list[str], str, str]:
@@ -191,6 +201,10 @@ def runtime_config(config: Mapping[str, object]) -> tuple[list[str], str, str]:
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.host:
         raise RuntimeError("configuration unavailable")
     return categories, model.strip(), api_url.strip()
+
+
+# The first load fails hard: a service with no valid config must not start.
+activate_config(build_active_config(rules.snapshot()))
 
 
 def safe_api_url(api_url: str) -> str:
@@ -390,9 +404,9 @@ async def _generate_with_timeout(
         request_control.release_if_not_started()
 
 
-def _provider_settings() -> tuple[str, str]:
+def _provider_settings(config: Mapping[str, object]) -> tuple[str, str]:
     try:
-        _, model, api_url = runtime_config(load_config())
+        _, model, api_url = runtime_config(config)
         return model, api_url
     except Exception as exc:
         log_failure("config_load_failed", exc)
@@ -422,6 +436,17 @@ def test_page():
     return {"message": "Test page not found"}
 
 
+def _request_config() -> dict:
+    """One config generation for the whole request (rules, model and URL)."""
+    try:
+        return load_config()
+    except Exception as exc:
+        log_failure("config_load_failed", exc)
+        raise HTTPException(
+            status_code=503, detail="configuration unavailable"
+        ) from exc
+
+
 def _mark_busy(result: dict, model_out: object) -> dict:
     """Keep the busy marker visible even where rules rewrite the reason."""
     if (
@@ -443,9 +468,9 @@ async def classify(ticket: Ticket):
     # Prompt categories and rule validation share one config snapshot so a
     # concurrent /reload-config cannot make the model return a category the
     # rules engine no longer accepts.
-    config = rules.snapshot()
+    config = _request_config()
     categories = rules.configured_categories(config)
-    model, api_url = _provider_settings()
+    model, api_url = _provider_settings(config)
     ticket_data = ticket.model_dump()
     try:
         model_out = await _generate_with_timeout(
@@ -467,9 +492,7 @@ async def classify(ticket: Ticket):
 @app.post("/reload-config", dependencies=[Depends(require_admin_token)])
 def reload_config():
     try:
-        rules.reload()
-        configure_audit(settings_from_config(rules.snapshot()))
-        apply_abuse_settings(rules.snapshot())
+        reload_active_config()
         return {"status": "ok"}
     except Exception as exc:
         log_failure("config_reload_failed", exc)
@@ -480,7 +503,7 @@ def reload_config():
 
 @app.get("/verify-ollama-connection", dependencies=[Depends(require_admin_token)])
 def verify_ollama():
-    model, api_url = _provider_settings()
+    model, api_url = _provider_settings(_request_config())
     check = check_ollama_connection(api_url, model)
     return {
         "model": model,
@@ -499,9 +522,9 @@ async def classify_batch(req: BatchClassificationRequest):
     deadline = start + BATCH_TIMEOUT_SECONDS
     results: list[ClassificationResponse] = []
     degraded = 0
-    config = rules.snapshot()
+    config = _request_config()
     categories = rules.configured_categories(config)
-    model, api_url = _provider_settings()
+    model, api_url = _provider_settings(config)
 
     for ticket in req.tickets:
         ticket_data = ticket.model_dump()

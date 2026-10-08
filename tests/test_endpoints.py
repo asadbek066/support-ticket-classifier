@@ -350,7 +350,7 @@ class ReloadConfigEndpointTests(unittest.TestCase):
     def test_reload_failure_keeps_previous_rules(self):
         with (
             patch.dict(os.environ, ADMIN_ENV, clear=False),
-            patch.object(main.rules, "reload", side_effect=OSError("io error")),
+            patch("app.main.read_config_file", side_effect=RuntimeError("io error")),
         ):
             response = self.client.post(
                 "/reload-config", headers={"X-Admin-Token": TOKEN}
@@ -358,56 +358,6 @@ class ReloadConfigEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertIn("Billing & Payments", main.rules.configured_categories())
-
-
-class LoadConfigCacheTests(unittest.TestCase):
-    def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.config_path = Path(self.temp_dir.name) / "config.yaml"
-        self.config_path.write_text("categories:\n  - Billing\n", encoding="utf-8")
-        self.path_patch = patch.object(main, "CONFIG_PATH", self.config_path)
-        self.cache_patch = patch.dict(main._CONFIG_CACHE, {}, clear=True)
-        self.path_patch.start()
-        self.cache_patch.start()
-        self.addCleanup(self.cache_patch.stop)
-        self.addCleanup(self.path_patch.stop)
-        self.addCleanup(self.temp_dir.cleanup)
-
-    def test_returns_parsed_mapping(self):
-        self.assertEqual(main.load_config(), {"categories": ["Billing"]})
-
-    def test_cached_value_is_reused_until_the_file_changes(self):
-        first = main.load_config()
-        self.assertIs(main.load_config(), first)
-
-        self.config_path.write_text(
-            "categories:\n  - Refunds\n  - Billing\n", encoding="utf-8"
-        )
-        self.assertEqual(
-            main.load_config(), {"categories": ["Refunds", "Billing"]}
-        )
-
-    def test_malformed_config_falls_back_to_last_known_good(self):
-        good = main.load_config()
-        self.config_path.write_text(":\n  broken: [", encoding="utf-8")
-
-        self.assertEqual(main.load_config(), good)
-
-    def test_missing_file_falls_back_to_last_known_good(self):
-        good = main.load_config()
-        self.config_path.unlink()
-
-        self.assertEqual(main.load_config(), good)
-
-    def test_missing_file_raises_without_a_cached_value(self):
-        self.config_path.unlink()
-        with self.assertRaisesRegex(RuntimeError, "configuration unavailable"):
-            main.load_config()
-
-    def test_non_mapping_config_raises(self):
-        self.config_path.write_text("- just\n- a list\n", encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeError, "configuration unavailable"):
-            main.load_config()
 
 
 if __name__ == "__main__":
