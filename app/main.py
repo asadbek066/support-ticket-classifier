@@ -425,7 +425,7 @@ def admin_dashboard():
     admin_file = ROOT / "app" / "admin.html"
     if admin_file.exists():
         return FileResponse(admin_file, media_type="text/html")
-    return {"message": "Admin dashboard - visit http://localhost:8000/ to view"}
+    return {"message": "Admin dashboard not found"}
 
 
 @app.get("/test")
