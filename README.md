@@ -34,7 +34,7 @@ It is designed for local-first usage with Ollama.
 - `GET /audit-logs` view recent decisions
 - `GET /low-confidence-tickets` manual-review queue helper
 - `GET /low-confidence-count` manual-review queue size only
-- `POST /reload-config` reload YAML rules without restart
+- `POST /reload-config` re-read and validate `config.yaml` (rules, model, URL, limits) without restart
 - `GET /verify-ollama-connection` check server connectivity and model presence
 
 ## Setup
@@ -100,6 +100,9 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/classify" -Method Post -ContentTyp
 - confidence threshold
 - forced human-review categories
 - Ollama model and API URL
+- audit, rate-limit and provider-queue bounds
+
+Changes take effect on `POST /reload-config` (or restart).
 
 ## Audit log storage
 
@@ -197,10 +200,15 @@ keep them on a trusted network (see below). Three bounds are available:
   service account and protect its parent directory against replacement by
   other accounts before running with real ticket data; the service does not
   rewrite NTFS ACLs.
-- Configuration is cached by file mtime/size. A malformed or missing config
-  keeps the last known good configuration active until `/reload-config`
-  succeeds; prompt categories and rule validation always use the same rules
-  snapshot, including across a concurrent reload.
+- Configuration is loaded from `config.yaml` at startup and again only when
+  `POST /reload-config` is called; editing the file does nothing by itself.
+  A reload parses and validates the whole file (categories, queue map, rules,
+  Ollama model and URL, and the `audit`, `rate_limit` and `provider_queue`
+  sections) and then switches every setting over together. If the file is
+  missing, malformed, or any section is invalid, the reload answers `503` and
+  the previous model, URL, rules and limits stay active. A request uses one
+  configuration generation from start to finish, including across a concurrent
+  reload. A service whose config is invalid at startup refuses to start.
 - Dependabot tracks `requirements.txt` only; it cannot regenerate the
   hash-pinned uv lock, so recompile the lock when accepting a dependency bump.
 - Request bodies are capped at 8 MB, and responses carry `no-store` plus
