@@ -22,7 +22,6 @@ rules:
   forced_human_review_categories:
     - Security Concerns
   confidence_threshold: 0.65
-  enterprise_confidence_boost: 0.1
 
 ollama:
   model: deepseek-r1:1.5b

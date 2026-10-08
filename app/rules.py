@@ -80,13 +80,6 @@ class RulesEngine:
             threshold = 0.65
         threshold = min(max(threshold, 0.0), 1.0)
 
-        try:
-            enterprise_boost = float(rules.get("enterprise_confidence_boost", 0.0))
-        except (OverflowError, TypeError, ValueError):
-            enterprise_boost = 0.0
-        if not math.isfinite(enterprise_boost):
-            enterprise_boost = 0.0
-
         queue_map = cfg.get("queue_map", {})
         if not isinstance(queue_map, dict):
             queue_map = {}
@@ -147,11 +140,8 @@ class RulesEngine:
         if not math.isfinite(confidence):
             confidence = 0.0
             invalid_confidence = True
-        if (
-            isinstance(ticket.get("customer_type"), str)
-            and ticket["customer_type"].lower() == "enterprise"
-        ):
-            confidence += enterprise_boost
+        # customer_type is caller-supplied and unauthenticated, so it must never
+        # raise confidence or suppress review.
         confidence = min(max(confidence, 0.0), 1.0)
 
         raw_human_review = output.get("human_review")
