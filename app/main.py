@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import yaml
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.datastructures import MutableHeaders
 from starlette.middleware.body_limit import RequestBodyLimitMiddleware
@@ -28,8 +28,17 @@ from app.audit import (
     log_classification,
     read_audit_logs,
 )
+from app.abuse import (
+    ProviderQueueSettings,
+    RateLimitSettings,
+    TokenBucketLimiter,
+    provider_queue_from_config,
+    rate_limit_from_config,
+)
 from app.ollama_client import (
-    ProviderCall,
+    BUSY_REASON,
+    acquire_provider_call,
+    provider_busy_fallback,
     check_ollama_connection,
     generate_classification,
     is_provider_fallback,
@@ -47,6 +56,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config.yaml"
 LOGGER = logging.getLogger(__name__)
 ADMIN_TOKEN_ENV = "TICKET_CLASSIFIER_ADMIN_TOKEN"  # nosec B105 - variable name only
+CLASSIFY_TOKEN_ENV = "TICKET_CLASSIFIER_CLASSIFY_TOKEN"  # nosec B105 - name only
 MAX_ADMIN_TOKEN_CHARS = 256
 BATCH_TIMEOUT_SECONDS = 120.0
 BATCH_ITEM_TIMEOUT_SECONDS = 60.0
@@ -73,6 +83,26 @@ try:
     configure_audit(settings_from_config(rules.snapshot()))
 except ValueError as _exc:
     LOGGER.error("audit_config_invalid (%s); using safe defaults", _exc)
+
+
+_ABUSE_LOCK = threading.Lock()
+_LIMITER = TokenBucketLimiter(RateLimitSettings())
+_QUEUE_SETTINGS = ProviderQueueSettings()
+
+
+def apply_abuse_settings(config: Mapping[str, object]) -> None:
+    """Validate then install rate-limit and provider-queue settings."""
+    global _LIMITER, _QUEUE_SETTINGS
+    limiter = TokenBucketLimiter(rate_limit_from_config(config))
+    queue = provider_queue_from_config(config)
+    with _ABUSE_LOCK:
+        _LIMITER, _QUEUE_SETTINGS = limiter, queue
+
+
+try:
+    apply_abuse_settings(rules.snapshot())
+except ValueError as _exc:
+    LOGGER.error("abuse_config_invalid (%s); using safe defaults", _exc)
 
 
 @asynccontextmanager
@@ -211,6 +241,54 @@ def require_admin_token(
         )
 
 
+def require_classify_token(
+    classify_token: str | None = Header(default=None, alias="X-Classify-Token"),
+) -> None:
+    """Optional shared secret for the classify endpoints (off unless configured)."""
+
+    expected = os.getenv(CLASSIFY_TOKEN_ENV)
+    if not expected:
+        return
+    if (
+        not 16 <= len(expected) <= MAX_ADMIN_TOKEN_CHARS
+        or not expected.isascii()
+        or any(
+            ord(character) < 0x20 or ord(character) == 0x7F for character in expected
+        )
+    ):
+        raise HTTPException(
+            status_code=503, detail="classification access is misconfigured"
+        )
+    if (
+        classify_token is None
+        or len(classify_token) > MAX_ADMIN_TOKEN_CHARS
+        or not classify_token.isascii()
+        or not hmac.compare_digest(classify_token, expected)
+    ):
+        raise HTTPException(
+            status_code=401, detail="classification token required"
+        )
+
+
+def _charge(request: Request, cost: int) -> None:
+    client = request.client.host if request.client else "unknown"
+    retry_after = _LIMITER.check(client, cost)
+    if retry_after:
+        raise HTTPException(
+            status_code=429,
+            detail="rate limit exceeded",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def rate_limit_single(request: Request) -> None:
+    _charge(request, 1)
+
+
+def rate_limit_batch(request: Request, req: BatchClassificationRequest) -> None:
+    _charge(request, len(req.tickets))
+
+
 class SecurityHeadersMiddleware:
     """Attach conservative response headers to every API response."""
 
@@ -278,10 +356,15 @@ async def _generate_with_timeout(
     timeout: float,
 ) -> dict:
     """Run one bounded Ollama call and close its client if the caller expires."""
-    request_control = ProviderCall()
-    if not request_control.admitted:
-        LOGGER.warning("ollama_request_limit_reached")
-        return provider_fallback()
+    queue = _QUEUE_SETTINGS
+    started = monotonic()
+    request_control, reason = await acquire_provider_call(
+        queue.max_depth, min(queue.max_wait_seconds, timeout)
+    )
+    if request_control is None:
+        LOGGER.warning("ollama_request_limit_reached (%s)", reason)
+        return provider_busy_fallback()
+    timeout = max(timeout - (monotonic() - started), 0.001)
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(
@@ -339,7 +422,23 @@ def test_page():
     return {"message": "Test page not found"}
 
 
-@app.post("/classify", response_model=ClassificationResponse)
+def _mark_busy(result: dict, model_out: object) -> dict:
+    """Keep the busy marker visible even where rules rewrite the reason."""
+    if (
+        isinstance(model_out, dict)
+        and model_out.get("reason") == BUSY_REASON
+        and is_provider_fallback(model_out)
+        and not str(result.get("reason", "")).startswith(BUSY_REASON)
+    ):
+        result["reason"] = f"{BUSY_REASON}; {result.get('reason', '')}"[:2_000]
+    return result
+
+
+@app.post(
+    "/classify",
+    response_model=ClassificationResponse,
+    dependencies=[Depends(require_classify_token), Depends(rate_limit_single)],
+)
 async def classify(ticket: Ticket):
     # Prompt categories and rule validation share one config snapshot so a
     # concurrent /reload-config cannot make the model return a category the
@@ -360,7 +459,7 @@ async def classify(ticket: Ticket):
         raise HTTPException(
             status_code=503, detail="classification unavailable"
         ) from exc
-    result = rules.apply(ticket_data, model_out, config)
+    result = _mark_busy(rules.apply(ticket_data, model_out, config), model_out)
     await _audit_classification(ticket_data, result)
     return ClassificationResponse(**result)
 
@@ -370,6 +469,7 @@ def reload_config():
     try:
         rules.reload()
         configure_audit(settings_from_config(rules.snapshot()))
+        apply_abuse_settings(rules.snapshot())
         return {"status": "ok"}
     except Exception as exc:
         log_failure("config_reload_failed", exc)
@@ -389,7 +489,11 @@ def verify_ollama():
     }
 
 
-@app.post("/classify-batch", response_model=BatchClassificationResponse)
+@app.post(
+    "/classify-batch",
+    response_model=BatchClassificationResponse,
+    dependencies=[Depends(require_classify_token), Depends(rate_limit_batch)],
+)
 async def classify_batch(req: BatchClassificationRequest):
     start = monotonic()
     deadline = start + BATCH_TIMEOUT_SECONDS
@@ -414,7 +518,9 @@ async def classify_batch(req: BatchClassificationRequest):
                     api_url,
                     min(BATCH_ITEM_TIMEOUT_SECONDS, remaining),
                 )
-                result = rules.apply(ticket_data, model_out, config)
+                result = _mark_busy(
+                    rules.apply(ticket_data, model_out, config), model_out
+                )
                 if is_provider_fallback(model_out):
                     degraded += 1
             except TimeoutError as exc:

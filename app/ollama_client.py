@@ -1,8 +1,10 @@
 import ipaddress
 import json
 import logging
+import asyncio
 import re
 import threading
+from collections import deque
 from time import monotonic
 from urllib.parse import urlsplit
 
@@ -14,6 +16,7 @@ NUMERIC_ADDRESS_RE = re.compile(
     re.IGNORECASE,
 )
 FALLBACK_REASON = "model-unreachable-or-invalid-response"
+BUSY_REASON = "provider_busy"
 FALLBACK_MARKER = "_provider_fallback"
 MAX_RESPONSE_CHARS = 20_000
 MAX_STREAM_SECONDS = 75.0
@@ -22,13 +25,102 @@ GENERATION_TIMEOUT_SECONDS = 60.0
 MAX_CONCURRENT_PROVIDER_CALLS = 4
 _PROVIDER_CALL_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_PROVIDER_CALLS)
 
+# FIFO of requests waiting for a provider slot. A freed slot is handed
+# straight to the oldest live waiter (never returned to the pool first), so a
+# newly arriving request cannot overtake queued ones. Guarded by _GATE_LOCK,
+# which also covers every slot release.
+_GATE_LOCK = threading.Lock()
+
+
+class _Waiter:
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.future: asyncio.Future = loop.create_future()
+        self.handed = False
+        self.abandoned = False
+
+    def wake(self) -> None:
+        if not self.future.done():
+            self.future.set_result(True)
+
+
+_WAITERS: deque[_Waiter] = deque()
+
+
+def _release_slot() -> None:
+    """Give a freed slot to the oldest waiter, or return it to the pool."""
+    while True:
+        with _GATE_LOCK:
+            waiter = None
+            while _WAITERS:
+                candidate = _WAITERS.popleft()
+                if not candidate.abandoned:
+                    candidate.handed = True
+                    waiter = candidate
+                    break
+            if waiter is None:
+                _PROVIDER_CALL_SLOTS.release()
+                return
+        try:
+            waiter.loop.call_soon_threadsafe(waiter.wake)
+            return
+        except RuntimeError:
+            # The waiter's loop is gone; pass the slot on to the next one.
+            with _GATE_LOCK:
+                waiter.handed = False
+                waiter.abandoned = True
+
+
+def queued_provider_waiters() -> int:
+    with _GATE_LOCK:
+        return len(_WAITERS)
+
+
+async def acquire_provider_call(
+    max_depth: int, max_wait: float
+) -> tuple["ProviderCall | None", str | None]:
+    """Get a provider slot, waiting in a bounded FIFO queue when all are busy.
+
+    Returns (call, None) on success or (None, "queue_full" | "wait_expired").
+    Cancellation while waiting releases the queue position (and a slot that
+    was already handed over).
+    """
+    call = ProviderCall()
+    if call.admitted:
+        return call, None
+    waiter = _Waiter(asyncio.get_running_loop())
+    with _GATE_LOCK:
+        # A slot may have been freed between the failed attempt and now.
+        if _PROVIDER_CALL_SLOTS.acquire(blocking=False):
+            return ProviderCall(preacquired=True), None
+        if len(_WAITERS) >= max_depth or max_wait <= 0:
+            return None, "queue_full"
+        _WAITERS.append(waiter)
+    try:
+        await asyncio.wait_for(waiter.future, timeout=max_wait)
+    except BaseException as exc:
+        with _GATE_LOCK:
+            owns_slot = waiter.handed
+            if not owns_slot:
+                waiter.abandoned = True
+                try:
+                    _WAITERS.remove(waiter)
+                except ValueError:
+                    pass
+        if owns_slot:
+            _release_slot()
+        if isinstance(exc, TimeoutError):
+            return None, "wait_expired"
+        raise
+    return ProviderCall(preacquired=True), None
+
 
 class ProviderCall:
     """Bound and cancel one active Ollama request across its async caller."""
 
-    def __init__(self) -> None:
+    def __init__(self, preacquired: bool = False) -> None:
         self._lock = threading.Lock()
-        self._has_slot = _PROVIDER_CALL_SLOTS.acquire(blocking=False)
+        self._has_slot = preacquired or _PROVIDER_CALL_SLOTS.acquire(blocking=False)
         self._slot_released = not self._has_slot
         self._started = False
         self._cancelled = False
@@ -77,7 +169,7 @@ class ProviderCall:
             release_slot = self._has_slot and not self._slot_released
             self._slot_released = True
         if release_slot:
-            _PROVIDER_CALL_SLOTS.release()
+            _release_slot()
 
     def release_if_not_started(self) -> None:
         with self._lock:
@@ -133,6 +225,11 @@ def provider_fallback() -> dict:
         "human_review": True,
         FALLBACK_MARKER: True,
     }
+
+
+def provider_busy_fallback() -> dict:
+    """Fallback for a request that never reached the model because of load."""
+    return {**provider_fallback(), "reason": BUSY_REASON}
 
 
 def is_provider_fallback(model_out: object) -> bool:
