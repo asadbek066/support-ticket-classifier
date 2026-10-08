@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import os
 import tempfile
@@ -39,6 +40,17 @@ class AuditBoundsBase(unittest.TestCase):
             item.start()
             self.addCleanup(item.stop)
         self.addCleanup(self.temp.cleanup)
+        self.key_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.key_dir.cleanup)
+        self.key_path = Path(self.key_dir.name) / "audit.key"
+        key_patches = [
+            patch("app.audit.DEFAULT_KEY_PATH", self.key_path),
+            patch.object(audit, "_KEY_CACHE", {}),
+            patch.object(audit, "_KEY_WARNED", set()),
+        ]
+        for item in key_patches:
+            item.start()
+            self.addCleanup(item.stop)
 
     def make(self, name, size=10):
         path = self.root / name
@@ -59,7 +71,15 @@ class TruncationTests(AuditBoundsBase):
         self.assertEqual(record["ticket"]["subject"], "Hi")
         digest = record["ticket_digest"]["description"]
         self.assertEqual(digest["chars"], 5000)
-        self.assertEqual(digest["sha256"], hashlib.sha256(text.encode()).hexdigest())
+        self.assertEqual(record["digest_scheme"], "hmac-sha256")
+        key = bytes.fromhex(self.key_path.read_text().strip())
+        self.assertEqual(
+            digest["hmac"], hmac.new(key, text.encode(), hashlib.sha256).hexdigest()
+        )
+        self.assertNotIn("sha256", digest)
+        self.assertNotEqual(
+            digest["hmac"], hashlib.sha256(text.encode()).hexdigest()
+        )
         self.assertEqual(record["truncated_fields"], ["description"])
 
     def test_full_text_switch_keeps_everything(self):
@@ -70,6 +90,54 @@ class TruncationTests(AuditBoundsBase):
         self.assertEqual(record["ticket"]["description"], text)
         self.assertEqual(record["truncated_fields"], [])
         self.assertEqual(record["ticket_digest"]["description"]["chars"], 5000)
+
+
+class DigestKeyTests(AuditBoundsBase):
+    def digest_of(self, subject):
+        log_classification({"subject": subject}, {"category": "c"})
+        lines = (self.root / next(self.root.glob("*.jsonl")).name).read_text().splitlines()
+        return json.loads(lines[-1])
+
+    def test_key_is_created_once_with_private_mode_outside_audit_dir(self):
+        first = self.digest_of("same")
+        second = self.digest_of("same")
+        self.assertEqual(
+            first["ticket_digest"]["subject"], second["ticket_digest"]["subject"]
+        )
+        self.assertEqual(os.stat(self.key_path).st_mode & 0o777, 0o600)
+        self.assertEqual(len(bytes.fromhex(self.key_path.read_text().strip())), 32)
+        self.assertFalse(self.key_path.resolve().is_relative_to(self.root.resolve()))
+
+    def test_different_installations_produce_different_digests(self):
+        first = self.digest_of("same")["ticket_digest"]["subject"]["hmac"]
+        self.key_path.unlink()
+        audit._KEY_CACHE.clear()
+        second = self.digest_of("same")["ticket_digest"]["subject"]["hmac"]
+        self.assertNotEqual(first, second)
+
+    def test_unusable_key_omits_digest_and_logs_once(self):
+        self.key_path.write_text("not-hex")
+        with self.assertLogs("app.audit", level="ERROR") as logs:
+            first = self.digest_of("a")
+            second = self.digest_of("b")
+        for record in (first, second):
+            self.assertEqual(record["ticket_digest"]["subject"], {"chars": 1})
+            self.assertNotIn("digest_scheme", record)
+        self.assertEqual(len(logs.records), 1)
+        self.assertNotIn("sha256", json.dumps(first))
+
+    def test_key_inside_audit_directory_is_refused(self):
+        audit.configure(AuditSettings(hash_key_file=str(self.root / "k.key")))
+        record = self.digest_of("a")
+        self.assertNotIn("hmac", record["ticket_digest"]["subject"])
+        self.assertFalse((self.root / "k.key").exists())
+
+    def test_old_sha256_records_still_read(self):
+        old = {"ticket": {"subject": "o"},
+               "ticket_digest": {"subject": {"sha256": "ab", "chars": 1}},
+               "classification": {"category": "c", "confidence": 0.1}}
+        (self.root / "classifications-2026-10-07.jsonl").write_text(json.dumps(old) + "\n")
+        self.assertEqual(read_audit_logs()[0]["ticket_digest"]["subject"]["sha256"], "ab")
 
 
 class PruneTests(AuditBoundsBase):

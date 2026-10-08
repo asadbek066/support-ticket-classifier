@@ -37,6 +37,7 @@ audit:
   max_total_mb: 200            # total audit directory cap; oldest files go first
   max_daily_mb: 20             # per-day file cap; further records are dropped
   prune_interval_seconds: 3600 # retention sweep at most this often during writes
+  # hash_key_file: audit_hmac.key  # HMAC key for ticket digests (default shown, relative to the project root)
 
 # Abuse bounds for /classify and /classify-batch (in-process, per worker).
 rate_limit:
