@@ -90,6 +90,18 @@ class PruneTests(AuditBoundsBase):
         self.assertEqual(removed, [])
         self.assertTrue((self.root / TODAY).exists())
 
+    def test_current_file_is_kept_even_when_expired_by_the_clock(self):
+        # "now" is far in the future, so today's file is older than retention.
+        future = datetime(2027, 1, 1, tzinfo=UTC)
+        current = "classifications-2026-10-08.jsonl"
+        self.make(current)
+        self.make("classifications-2026-10-07.jsonl")
+        removed = prune_audit_files(
+            AuditSettings(retention_days=1), now=future, current_name=current
+        )
+        self.assertEqual(removed, ["classifications-2026-10-07.jsonl"])
+        self.assertTrue((self.root / current).exists())
+
     def test_size_cap_removes_oldest_first(self):
         for day in ("05", "06", "07"):
             self.make(f"classifications-2026-10-{day}.jsonl", 400)
