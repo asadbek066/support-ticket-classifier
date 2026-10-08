@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import os
 import unittest
 from unittest.mock import patch
@@ -29,6 +30,19 @@ def post_one(client, **kwargs):
     return client.post("/classify", json={"subject": "Payment failed"}, **kwargs)
 
 
+SCENARIO_TIMEOUT = 5.0
+
+
+def bounded(test):
+    """Fail fast instead of hanging if a queue regression strands a waiter."""
+
+    @functools.wraps(test)
+    async def wrapper(self):
+        await asyncio.wait_for(test(self), SCENARIO_TIMEOUT)
+
+    return wrapper
+
+
 class RateLimitEndpointTests(unittest.TestCase):
     def setUp(self):
         self.addCleanup(setattr, main, "_LIMITER", main._LIMITER)
@@ -38,6 +52,8 @@ class RateLimitEndpointTests(unittest.TestCase):
         for item in (
             patch("app.main.generate_classification", return_value=GOOD),
             patch("app.main.log_classification"),
+            # Never queue here: a leaked slot must fail fast, not wait 30s per call.
+            patch.object(main, "_QUEUE_SETTINGS", ProviderQueueSettings(0, 0.0)),
         ):
             item.start()
             self.addCleanup(item.stop)
@@ -110,6 +126,8 @@ class ClassifyTokenTests(unittest.TestCase):
         for item in (
             patch("app.main.generate_classification", return_value=GOOD),
             patch("app.main.log_classification"),
+            # Never queue here: a leaked slot must fail fast, not wait 30s per call.
+            patch.object(main, "_QUEUE_SETTINGS", ProviderQueueSettings(0, 0.0)),
         ):
             item.start()
             self.addCleanup(item.stop)
@@ -178,6 +196,11 @@ class ProviderGateTests(unittest.IsolatedAsyncioTestCase):
         self.held = [ProviderCall() for _ in range(MAX_CONCURRENT_PROVIDER_CALLS)]
         self.assertTrue(all(call.admitted for call in self.held))
 
+    async def queued(self, count):
+        """Yield to the loop until exactly `count` requests are queued."""
+        while queued_provider_waiters() != count:
+            await asyncio.sleep(0)
+
     async def asyncTearDown(self):
         for call in self.held:
             call.cancel()
@@ -188,6 +211,7 @@ class ProviderGateTests(unittest.IsolatedAsyncioTestCase):
         for call in probes:
             call.cancel()
 
+    @bounded
     async def test_waiters_are_served_in_order_when_slots_free(self):
         order = []
 
@@ -197,9 +221,9 @@ class ProviderGateTests(unittest.IsolatedAsyncioTestCase):
             return call
 
         tasks = []
-        for name in ("first", "second", "third"):
+        for position, name in enumerate(("first", "second", "third"), start=1):
             tasks.append(asyncio.create_task(waiter(name)))
-            await asyncio.sleep(0.02)
+            await self.queued(position)
         self.assertEqual(queued_provider_waiters(), 3)
         # A newcomer must not overtake the queue when a slot frees.
         self.held.pop().cancel()
@@ -215,9 +239,10 @@ class ProviderGateTests(unittest.IsolatedAsyncioTestCase):
         second.cancel()
         third.cancel()
 
+    @bounded
     async def test_queue_full_returns_marked_fallback_through_endpoint(self):
         waiting = asyncio.create_task(acquire_provider_call(1, 5.0))
-        await asyncio.sleep(0.02)
+        await self.queued(1)
         call, reason = await acquire_provider_call(1, 5.0)
         self.assertIsNone(call)
         self.assertEqual(reason, "queue_full")
@@ -233,6 +258,7 @@ class ProviderGateTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await waiting
 
+    @bounded
     async def test_wait_expiry_returns_marked_fallback_and_frees_position(self):
         with (
             patch.object(main, "_QUEUE_SETTINGS", ProviderQueueSettings(4, 0.05)),
@@ -242,6 +268,7 @@ class ProviderGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.reason, "provider_busy")
         self.assertEqual(queued_provider_waiters(), 0)
 
+    @bounded
     async def test_busy_marker_survives_rule_overrides(self):
         ticket = main.Ticket(subject="my account was hacked")
         with (
@@ -252,6 +279,7 @@ class ProviderGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.reason.startswith("provider_busy"))
         self.assertTrue(result.human_review)
 
+    @bounded
     async def test_busy_batch_items_count_as_degraded(self):
         request = main.BatchClassificationRequest(tickets=[main.Ticket(subject="a")])
         with (
@@ -262,9 +290,10 @@ class ProviderGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.degraded, 1)
         self.assertTrue(response.results[0].reason.startswith("provider_busy"))
 
+    @bounded
     async def test_cancellation_while_queued_releases_queue_slot(self):
         task = asyncio.create_task(acquire_provider_call(1, 5.0))
-        await asyncio.sleep(0.02)
+        await self.queued(1)
         self.assertEqual(queued_provider_waiters(), 1)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
@@ -272,16 +301,17 @@ class ProviderGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queued_provider_waiters(), 0)
         # depth 1 is free again
         again = asyncio.create_task(acquire_provider_call(1, 5.0))
-        await asyncio.sleep(0.02)
+        await self.queued(1)
         self.assertEqual(queued_provider_waiters(), 1)
         again.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await again
 
+    @bounded
     async def test_cancel_after_handoff_passes_the_slot_on(self):
         first = asyncio.create_task(acquire_provider_call(4, 5.0))
         second = asyncio.create_task(acquire_provider_call(4, 5.0))
-        await asyncio.sleep(0.02)
+        await self.queued(2)
         self.held.pop().cancel()  # slot handed to `first`
         first.cancel()  # cancelled before it resumes
         call, _ = await asyncio.wait_for(second, 1)
