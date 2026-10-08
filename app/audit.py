@@ -297,6 +297,8 @@ def prune_audit_files(
     if current_name is None:
         current_name = f"classifications-{now.strftime('%Y-%m-%d')}.jsonl"
     directory = AUDIT_LOG_DIR
+    if not _safe_to_prune(directory):
+        return []
     cutoff = now.date() - timedelta(days=settings.retention_days)
     removed: list[str] = []
     remaining = []
@@ -321,6 +323,28 @@ def prune_audit_files(
                 _FILE_STATS.pop(directory / name, None)
         LOGGER.info("audit_pruned files=%d", len(removed))
     return removed
+
+
+_UNSAFE_WARNED: set[Path] = set()
+
+
+def _safe_to_prune(directory: Path) -> bool:
+    """Only prune a real directory owned by this user (writes are unaffected)."""
+    try:
+        if directory.is_symlink():
+            reason = "is a symlink"
+        elif hasattr(os, "getuid") and os.stat(directory).st_uid != os.getuid():
+            reason = "is not owned by the service user"
+        else:
+            return True
+    except OSError:
+        return False
+    with _STATE_LOCK:
+        first = directory not in _UNSAFE_WARNED
+        _UNSAFE_WARNED.add(directory)
+    if first:
+        LOGGER.error("audit_prune_refused: audit directory %s", reason)
+    return False
 
 
 def _unlink(path: Path) -> bool:
