@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 from app.main import app, classify_batch, runtime_config, safe_api_url
 from app.ollama_client import provider_fallback
 from app.schemas import BatchClassificationRequest, Ticket
+from tests.gate_isolation import GateIsolation
 
 
-class MainBoundaryTests(unittest.TestCase):
+class MainBoundaryTests(GateIsolation, unittest.TestCase):
     def test_admin_surface_fails_closed_without_configured_token(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TICKET_CLASSIFIER_ADMIN_TOKEN", None)
@@ -83,7 +84,7 @@ class MainBoundaryTests(unittest.TestCase):
         )
 
 
-class BatchBoundaryTests(unittest.IsolatedAsyncioTestCase):
+class BatchBoundaryTests(GateIsolation, unittest.IsolatedAsyncioTestCase):
     async def test_batch_deadline_returns_review_fallbacks_for_remaining_tickets(self):
         request = BatchClassificationRequest(
             tickets=[Ticket(subject="first"), Ticket(subject="second")]
