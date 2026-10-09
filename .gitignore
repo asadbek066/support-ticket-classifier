@@ -26,6 +26,8 @@ wheels/
 # Virtual environments
 .venv
 .env
+.env.*
+!.env.example
 
 # IDE
 .vscode/

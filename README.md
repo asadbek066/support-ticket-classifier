@@ -51,11 +51,23 @@ export TICKET_CLASSIFIER_ADMIN_TOKEN="$(python -c 'import secrets; print(secrets
    Send it in the `X-Admin-Token` header. The admin endpoints remain disabled
    with a `503` response until this token is configured.
 
+   The two variables the service reads are listed in `.env.example`.
+
 5. Run API:
 
 ```bash
 uvicorn app.main:app --reload --port 8000
 ```
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
+ruff check . && ruff format --check .
+```
+
+The tests use a fake Ollama transport; no model or network is needed. CI runs
+them on Python 3.11, 3.12 and 3.13.
 
 ## Quick Test
 
