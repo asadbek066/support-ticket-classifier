@@ -155,7 +155,6 @@
             loadDashboard();
         });
 
-        // Tab switching
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 const tabName = tab.dataset.tab;
@@ -169,7 +168,6 @@
             });
         });
 
-        // Load dashboard on startup
         function loadDashboard() {
             loadStatus();
             loadRecentTickets();
@@ -301,7 +299,7 @@
         }
 
         loadDashboard();
-        setInterval(loadDashboard, 30000); // Refresh every 30s
+        setInterval(loadDashboard, 30000);
     </script>
 </body>
 </html>

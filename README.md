@@ -1,28 +1,10 @@
 # Support Ticket Classifier
 
-Rule-assisted AI service for support ticket classification and queue routing.
-
-## Overview
-
-This API classifies incoming support tickets into configured categories,
-maps them to internal queues, and flags low-confidence cases for manual review.
-It is designed for local-first usage with Ollama.
-
-## Features
-
-- Single ticket classification endpoint
-- Batch classification endpoint
-- Queue mapping via `config.yaml`
-- Confidence threshold and forced human-review rules
-- Audit logging for classification decisions
-- Lightweight dashboard and test page
-
-## Tech Stack
-
-- Python
-- FastAPI
-- Ollama (local LLM)
-- YAML-based routing rules
+FastAPI service that classifies support tickets with a local Ollama model and
+routes them to queues. Rules in `config.yaml` map categories to queues, force
+human review for security-sensitive tickets, and send low-confidence results to
+manual triage. Every decision is written to an audit log; a small dashboard and
+a test page are served by the app.
 
 ## API Endpoints
 
