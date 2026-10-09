@@ -92,9 +92,7 @@ def settings_from_config(config: Mapping[str, object]) -> AuditSettings:
             "max_text_chars", defaults.max_text_chars, 0, TICKET_TEXT_LIMIT, True
         ),
         store_full_text=store_full,
-        retention_days=number(
-            "retention_days", defaults.retention_days, 1, 3650, True
-        ),
+        retention_days=number("retention_days", defaults.retention_days, 1, 3650, True),
         max_total_bytes=int(
             number("max_total_mb", defaults.max_total_bytes / MEGABYTE, 1, 1_000_000)
             * MEGABYTE
@@ -413,10 +411,7 @@ def log_classification(
     line = json.dumps(entry) + "\n"
     descriptor = os.open(
         log_file,
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_APPEND
-        | getattr(os, "O_NOFOLLOW", 0),
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
         AUDIT_FILE_MODE,
     )
     try:
@@ -478,9 +473,7 @@ def _scan_entries(
         return f.tell(), valid, matches
 
 
-def _tail_entries(
-    path: Path, limit: int, threshold: float | None = None
-) -> list[dict]:
+def _tail_entries(path: Path, limit: int, threshold: float | None = None) -> list[dict]:
     """Return up to limit valid entries from the end of the file, newest first."""
     found: list[dict] = []
     with open(path, "rb") as f:

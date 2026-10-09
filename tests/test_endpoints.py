@@ -1,10 +1,8 @@
 import asyncio
 import os
-import tempfile
 import threading
 import time
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -35,9 +33,7 @@ class ClassifyEndpointTests(GateIsolation, unittest.TestCase):
             ),
             patch("app.main.log_classification") as audit,
         ):
-            response = self.client.post(
-                "/classify", json={"subject": "Payment failed"}
-            )
+            response = self.client.post("/classify", json={"subject": "Payment failed"})
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -133,6 +129,7 @@ class ClassifyEndpointTests(GateIsolation, unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
 
+
 class AuditBoundaryTests(GateIsolation, unittest.IsolatedAsyncioTestCase):
     async def test_classify_audit_timeout_does_not_wait_for_the_write(self):
         release = threading.Event()
@@ -192,6 +189,7 @@ class AuditBoundaryTests(GateIsolation, unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(finished.wait, 1.0)
             inference_executor.shutdown(wait=True)
 
+
 class ProviderTimeoutBoundaryTests(GateIsolation, unittest.IsolatedAsyncioTestCase):
     async def test_classify_timeout_closes_slow_header_connection(self):
         import socketserver
@@ -222,9 +220,7 @@ class ProviderTimeoutBoundaryTests(GateIsolation, unittest.IsolatedAsyncioTestCa
                 finally:
                     server_finished.set()
 
-        server = socketserver.ThreadingTCPServer(
-            ("127.0.0.1", 0), SlowHeaderHandler
-        )
+        server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), SlowHeaderHandler)
         server.daemon_threads = True
         server.block_on_close = False
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -248,8 +244,7 @@ class ProviderTimeoutBoundaryTests(GateIsolation, unittest.IsolatedAsyncioTestCa
             admitted_count = 0
             while time.monotonic() < deadline:
                 controls = [
-                    ProviderCall()
-                    for _ in range(MAX_CONCURRENT_PROVIDER_CALLS + 1)
+                    ProviderCall() for _ in range(MAX_CONCURRENT_PROVIDER_CALLS + 1)
                 ]
                 admitted_count = sum(control.admitted for control in controls)
                 for control in controls:

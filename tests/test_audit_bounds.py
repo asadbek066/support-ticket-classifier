@@ -77,9 +77,7 @@ class TruncationTests(AuditBoundsBase):
             digest["hmac"], hmac.new(key, text.encode(), hashlib.sha256).hexdigest()
         )
         self.assertNotIn("sha256", digest)
-        self.assertNotEqual(
-            digest["hmac"], hashlib.sha256(text.encode()).hexdigest()
-        )
+        self.assertNotEqual(digest["hmac"], hashlib.sha256(text.encode()).hexdigest())
         self.assertEqual(record["truncated_fields"], ["description"])
 
     def test_full_text_switch_keeps_everything(self):
@@ -95,7 +93,9 @@ class TruncationTests(AuditBoundsBase):
 class DigestKeyTests(AuditBoundsBase):
     def digest_of(self, subject):
         log_classification({"subject": subject}, {"category": "c"})
-        lines = (self.root / next(self.root.glob("*.jsonl")).name).read_text().splitlines()
+        lines = (
+            (self.root / next(self.root.glob("*.jsonl")).name).read_text().splitlines()
+        )
         return json.loads(lines[-1])
 
     def test_key_is_created_once_with_private_mode_outside_audit_dir(self):
@@ -133,11 +133,17 @@ class DigestKeyTests(AuditBoundsBase):
         self.assertFalse((self.root / "k.key").exists())
 
     def test_old_sha256_records_still_read(self):
-        old = {"ticket": {"subject": "o"},
-               "ticket_digest": {"subject": {"sha256": "ab", "chars": 1}},
-               "classification": {"category": "c", "confidence": 0.1}}
-        (self.root / "classifications-2026-10-07.jsonl").write_text(json.dumps(old) + "\n")
-        self.assertEqual(read_audit_logs()[0]["ticket_digest"]["subject"]["sha256"], "ab")
+        old = {
+            "ticket": {"subject": "o"},
+            "ticket_digest": {"subject": {"sha256": "ab", "chars": 1}},
+            "classification": {"category": "c", "confidence": 0.1},
+        }
+        (self.root / "classifications-2026-10-07.jsonl").write_text(
+            json.dumps(old) + "\n"
+        )
+        self.assertEqual(
+            read_audit_logs()[0]["ticket_digest"]["subject"]["sha256"], "ab"
+        )
 
 
 class PruneTests(AuditBoundsBase):
@@ -165,9 +171,11 @@ class PruneTests(AuditBoundsBase):
         victim.write_text("keep")
         link = self.root / "link"
         os.symlink(target, link)
-        with patch("app.audit.AUDIT_LOG_DIR", link), patch.object(
-            audit, "_UNSAFE_WARNED", set()
-        ), self.assertLogs("app.audit", level="ERROR") as logs:
+        with (
+            patch("app.audit.AUDIT_LOG_DIR", link),
+            patch.object(audit, "_UNSAFE_WARNED", set()),
+            self.assertLogs("app.audit", level="ERROR") as logs,
+        ):
             first = prune_audit_files(AuditSettings(retention_days=1), now=NOW)
             second = prune_audit_files(AuditSettings(retention_days=1), now=NOW)
         self.assertEqual((first, second), ([], []))
@@ -176,9 +184,11 @@ class PruneTests(AuditBoundsBase):
 
     def test_directory_owned_by_someone_else_is_never_pruned(self):
         old = self.make("classifications-2001-01-01.jsonl")
-        with patch("app.audit.os.getuid", return_value=os.getuid() + 1), patch.object(
-            audit, "_UNSAFE_WARNED", set()
-        ), self.assertLogs("app.audit", level="ERROR"):
+        with (
+            patch("app.audit.os.getuid", return_value=os.getuid() + 1),
+            patch.object(audit, "_UNSAFE_WARNED", set()),
+            self.assertLogs("app.audit", level="ERROR"),
+        ):
             self.assertEqual(
                 prune_audit_files(AuditSettings(retention_days=1), now=NOW), []
             )
@@ -218,9 +228,7 @@ class PruneTests(AuditBoundsBase):
         ]
         (self.root / "classifications-2020-01-01").mkdir()
         os.symlink(outside, self.root / "classifications-2020-01-02.jsonl")
-        prune_audit_files(
-            AuditSettings(retention_days=1, max_total_bytes=1), now=NOW
-        )
+        prune_audit_files(AuditSettings(retention_days=1, max_total_bytes=1), now=NOW)
         for path in keep:
             self.assertTrue(path.exists(), path.name)
         self.assertTrue((self.root / "classifications-2020-01-01").is_dir())
@@ -258,7 +266,10 @@ class DailyCapTests(AuditBoundsBase):
         warnings = [r for r in logs.records if "daily_cap" in r.getMessage()]
         self.assertEqual(len(warnings), 1)
         self.assertEqual(
-            oct(os.stat(self.root / next(self.root.glob("*.jsonl")).name).st_mode & 0o777),
+            oct(
+                os.stat(self.root / next(self.root.glob("*.jsonl")).name).st_mode
+                & 0o777
+            ),
             oct(0o600),
         )
 
@@ -268,7 +279,11 @@ class ReaderCompatibilityTests(AuditBoundsBase):
         old = {
             "timestamp": "2026-10-07T00:00:00+00:00",
             "ticket": {"subject": "old", "description": "z" * 5000},
-            "classification": {"category": "c", "confidence": 0.1, "human_review": True},
+            "classification": {
+                "category": "c",
+                "confidence": 0.1,
+                "human_review": True,
+            },
         }
         (self.root / "classifications-2026-10-07.jsonl").write_text(
             json.dumps(old) + "\n"

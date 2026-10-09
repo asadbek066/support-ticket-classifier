@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app import main, ollama_client
+from app import main
 from app.abuse import (
     ProviderQueueSettings,
     RateLimitSettings,
@@ -23,8 +23,12 @@ from app.ollama_client import (
 )
 from tests.gate_isolation import GateIsolation
 
-GOOD = {"category": "Billing & Payments", "confidence": 0.9, "reason": "ok",
-        "human_review": False}
+GOOD = {
+    "category": "Billing & Payments",
+    "confidence": 0.9,
+    "reason": "ok",
+    "human_review": False,
+}
 
 
 def post_one(client, **kwargs):
@@ -96,11 +100,17 @@ class RateLimitEndpointTests(GateIsolation, unittest.TestCase):
         bad_bodies = {
             "/classify": [
                 {"json": {"subject": 5}},
-                {"content": b"{not json", "headers": {"Content-Type": "application/json"}},
+                {
+                    "content": b"{not json",
+                    "headers": {"Content-Type": "application/json"},
+                },
             ],
             "/classify-batch": [
                 {"json": {"tickets": []}},
-                {"content": b"{not json", "headers": {"Content-Type": "application/json"}},
+                {
+                    "content": b"{not json",
+                    "headers": {"Content-Type": "application/json"},
+                },
             ],
         }
         for path, variants in bad_bodies.items():
@@ -147,8 +157,12 @@ class RateLimitEndpointTests(GateIsolation, unittest.TestCase):
 
     def test_settings_validation(self):
         self.assertEqual(rate_limit_from_config({}), RateLimitSettings())
-        for bad in ({"burst": 10}, {"tickets_per_minute": 0}, {"enabled": 1},
-                    {"nope": 1}):
+        for bad in (
+            {"burst": 10},
+            {"tickets_per_minute": 0},
+            {"enabled": 1},
+            {"nope": 1},
+        ):
             with self.assertRaises(ValueError):
                 rate_limit_from_config({"rate_limit": bad})
         with self.assertRaises(ValueError):
@@ -177,7 +191,9 @@ class ClassifyTokenTests(GateIsolation, unittest.TestCase):
         with patch.dict(os.environ, {main.CLASSIFY_TOKEN_ENV: token}):
             self.assertEqual(post_one(self.client).status_code, 401)
             self.assertEqual(
-                post_one(self.client, headers={"X-Classify-Token": "x" * 32}).status_code,
+                post_one(
+                    self.client, headers={"X-Classify-Token": "x" * 32}
+                ).status_code,
                 401,
             )
             self.assertEqual(
@@ -190,7 +206,8 @@ class ClassifyTokenTests(GateIsolation, unittest.TestCase):
             )
             self.assertEqual(
                 self.client.post(
-                    "/classify-batch", json=batch,
+                    "/classify-batch",
+                    json=batch,
                     headers={"X-Classify-Token": token},
                 ).status_code,
                 200,
@@ -198,8 +215,9 @@ class ClassifyTokenTests(GateIsolation, unittest.TestCase):
 
     def test_empty_or_blank_token_fails_closed(self):
         for value in ("", "   ", " " * 20):
-            with self.subTest(value=value), patch.dict(
-                os.environ, {main.CLASSIFY_TOKEN_ENV: value}
+            with (
+                self.subTest(value=value),
+                patch.dict(os.environ, {main.CLASSIFY_TOKEN_ENV: value}),
             ):
                 self.assertTrue(main.classify_token_misconfigured())
                 self.assertEqual(post_one(self.client).status_code, 503)
@@ -215,9 +233,11 @@ class ClassifyTokenTests(GateIsolation, unittest.TestCase):
             async with main.lifespan(main.app):
                 pass
 
-        with patch.dict(os.environ, {main.CLASSIFY_TOKEN_ENV: ""}), patch(
-            "app.main.startup_prune"
-        ), self.assertLogs("app.main", level="ERROR"):
+        with (
+            patch.dict(os.environ, {main.CLASSIFY_TOKEN_ENV: ""}),
+            patch("app.main.startup_prune"),
+            self.assertLogs("app.main", level="ERROR"),
+        ):
             asyncio.run(run())
 
     def test_weak_configured_token_fails_closed(self):

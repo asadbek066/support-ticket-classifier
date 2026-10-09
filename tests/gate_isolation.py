@@ -2,7 +2,6 @@
 
 import sys
 import threading
-import unittest
 from collections import deque
 from unittest.mock import patch
 

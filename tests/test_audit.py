@@ -15,7 +15,6 @@ from app.audit import (
     read_audit_logs,
 )
 
-
 _KEY_TEMP = tempfile.TemporaryDirectory()
 
 
@@ -157,17 +156,13 @@ class AuditWriteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with patch("app.audit.AUDIT_LOG_DIR", root):
-                name = log_classification(
-                    {"subject": "first"}, {"category": "Billing"}
-                )
+                name = log_classification({"subject": "first"}, {"category": "Billing"})
                 log_classification({"subject": "second"}, {"category": "Billing"})
 
             self.assertRegex(name, r"^classifications-\d{4}-\d{2}-\d{2}\.jsonl$")
             lines = (root / name).read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 2)
-            self.assertEqual(
-                json.loads(lines[0])["ticket"]["subject"], "first"
-            )
+            self.assertEqual(json.loads(lines[0])["ticket"]["subject"], "first")
 
     def test_log_classification_uses_one_clock_for_name_and_timestamp(self):
         first = datetime(2030, 1, 1, 23, 59, 59, tzinfo=UTC)
@@ -254,9 +249,7 @@ class AuditCountTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log_file = root / "classifications-2026-09-09.jsonl"
-            log_file.write_text(
-                json.dumps(self._entry(1)) + "\n", encoding="utf-8"
-            )
+            log_file.write_text(json.dumps(self._entry(1)) + "\n", encoding="utf-8")
 
             with patch("app.audit.AUDIT_LOG_DIR", root):
                 self.assertEqual(count_audit_logs(), 1)
@@ -295,9 +288,7 @@ class AuditCountTests(unittest.TestCase):
 
             with patch("app.audit.AUDIT_LOG_DIR", root):
                 self.assertEqual(count_audit_logs(), 3)
-                log_file.write_text(
-                    json.dumps(self._entry(9)) + "\n", encoding="utf-8"
-                )
+                log_file.write_text(json.dumps(self._entry(9)) + "\n", encoding="utf-8")
                 self.assertEqual(count_audit_logs(), 1)
 
     def test_counts_reset_after_copytruncate_regrowth(self):
@@ -319,10 +310,7 @@ class AuditCountTests(unittest.TestCase):
                 # past the previously cached offsets with low-confidence
                 # entries. A stale cache would count only the tail fragment.
                 log_file.write_text(
-                    "\n".join(
-                        json.dumps(self._entry(i, 0.1))
-                        for i in range(10, 20)
-                    )
+                    "\n".join(json.dumps(self._entry(i, 0.1)) for i in range(10, 20))
                     + "\n",
                     encoding="utf-8",
                 )

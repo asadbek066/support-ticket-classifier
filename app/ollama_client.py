@@ -1,7 +1,7 @@
+import asyncio
 import ipaddress
 import json
 import logging
-import asyncio
 import re
 import threading
 from collections import deque
@@ -245,10 +245,7 @@ def provider_busy_fallback() -> dict:
 
 
 def is_provider_fallback(model_out: object) -> bool:
-    return (
-        isinstance(model_out, dict)
-        and model_out.get(FALLBACK_MARKER) is True
-    )
+    return isinstance(model_out, dict) and model_out.get(FALLBACK_MARKER) is True
 
 
 def _read_bounded_response(response, deadline: float) -> str | None:

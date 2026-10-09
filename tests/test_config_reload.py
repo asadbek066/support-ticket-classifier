@@ -117,8 +117,11 @@ class ConfigReloadTests(GateIsolation, unittest.TestCase):
 
         def fake_generate(ticket, categories, model, api_url, request_control=None):
             seen.update(model=model, api_url=api_url, categories=categories)
-            return {"category": "Billing & Payments", "confidence": 0.9,
-                    "human_review": False}
+            return {
+                "category": "Billing & Payments",
+                "confidence": 0.9,
+                "human_review": False,
+            }
 
         with (
             patch("app.main.generate_classification", fake_generate),
@@ -128,7 +131,9 @@ class ConfigReloadTests(GateIsolation, unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(seen["model"], "model-a")
         self.assertEqual(seen["api_url"], "http://localhost:11434/api/generate")
-        self.assertEqual(seen["categories"], ["Billing & Payments", "Other / Needs Review"])
+        self.assertEqual(
+            seen["categories"], ["Billing & Payments", "Other / Needs Review"]
+        )
 
     def test_rate_limiter_state_survives_reload_when_settings_unchanged(self):
         limiter = main._LIMITER

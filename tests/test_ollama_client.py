@@ -78,10 +78,13 @@ class OllamaBoundaryTests(GateIsolation, unittest.TestCase):
             "http://127.1:11434/api/generate",
             "http://0x7f000001:11434/api/generate",
         ):
-            with self.subTest(url=url), patch(
-                "app.ollama_client.httpx.stream",
-                return_value=StubStream([b"{}"]),
-            ) as stream:
+            with (
+                self.subTest(url=url),
+                patch(
+                    "app.ollama_client.httpx.stream",
+                    return_value=StubStream([b"{}"]),
+                ) as stream,
+            ):
                 generate_classification({}, ["Billing"], "model", url)
 
             self.assertFalse(stream.call_args.kwargs["trust_env"])
@@ -91,10 +94,13 @@ class OllamaBoundaryTests(GateIsolation, unittest.TestCase):
             "https://ollama.example/api/generate",
             "https://face.cafe/api/generate",
         ):
-            with self.subTest(url=url), patch(
-                "app.ollama_client.httpx.stream",
-                return_value=StubStream([b"{}"]),
-            ) as stream:
+            with (
+                self.subTest(url=url),
+                patch(
+                    "app.ollama_client.httpx.stream",
+                    return_value=StubStream([b"{}"]),
+                ) as stream,
+            ):
                 generate_classification({}, ["Billing"], "model", url)
 
             self.assertTrue(stream.call_args.kwargs["trust_env"])
@@ -255,35 +261,25 @@ class OllamaConnectionCheckTests(GateIsolation, unittest.TestCase):
                 "http://proxy.test/ollama/api/generate", "deepseek-r1:1.5b"
             )
 
-        self.assertEqual(
-            get.call_args.args[0], "http://proxy.test/ollama/api/tags"
-        )
+        self.assertEqual(get.call_args.args[0], "http://proxy.test/ollama/api/tags")
 
     def test_connected_and_model_present(self):
         models = [{"name": "deepseek-r1:1.5b", "model": "deepseek-r1:1.5b"}]
-        with patch(
-            "app.ollama_client.httpx.get", return_value=_tags_response(models)
-        ):
+        with patch("app.ollama_client.httpx.get", return_value=_tags_response(models)):
             result = check_ollama_connection(API_URL, "deepseek-r1:1.5b")
 
-        self.assertEqual(
-            result, {"connected": True, "model_available": True}
-        )
+        self.assertEqual(result, {"connected": True, "model_available": True})
 
     def test_untagged_model_matches_latest_alias(self):
         models = [{"name": "deepseek-r1:latest"}]
-        with patch(
-            "app.ollama_client.httpx.get", return_value=_tags_response(models)
-        ):
+        with patch("app.ollama_client.httpx.get", return_value=_tags_response(models)):
             result = check_ollama_connection(API_URL, "deepseek-r1")
 
         self.assertTrue(result["model_available"])
 
     def test_connected_with_model_missing(self):
         models = [{"name": "llama3:latest"}]
-        with patch(
-            "app.ollama_client.httpx.get", return_value=_tags_response(models)
-        ):
+        with patch("app.ollama_client.httpx.get", return_value=_tags_response(models)):
             result = check_ollama_connection(API_URL, "deepseek-r1:1.5b")
 
         self.assertTrue(result["connected"])
@@ -331,17 +327,13 @@ class ProviderFallbackTests(GateIsolation, unittest.TestCase):
         )
         self.assertTrue(is_provider_fallback(provider_fallback()))
         self.assertFalse(
-            is_provider_fallback(
-                {"reason": FALLBACK_REASON, "human_review": True}
-            )
+            is_provider_fallback({"reason": FALLBACK_REASON, "human_review": True})
         )
 
 
 class ProviderCallControlTests(GateIsolation, unittest.TestCase):
     def test_provider_calls_have_bounded_admission(self):
-        controls = [
-            ProviderCall() for _ in range(MAX_CONCURRENT_PROVIDER_CALLS + 1)
-        ]
+        controls = [ProviderCall() for _ in range(MAX_CONCURRENT_PROVIDER_CALLS + 1)]
         try:
             self.assertEqual(
                 sum(control.admitted for control in controls),

@@ -4,8 +4,8 @@ import logging
 import os
 import threading
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -18,18 +18,6 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.datastructures import MutableHeaders
 from starlette.middleware.body_limit import RequestBodyLimitMiddleware
 
-from app.audit import (
-    AuditSettings,
-    configure as configure_audit,
-    count_audit_logs,
-    drop_stats,
-    settings_from_config,
-    startup_prune,
-    count_low_confidence_tickets,
-    get_low_confidence_tickets,
-    log_classification,
-    read_audit_logs,
-)
 from app.abuse import (
     ProviderQueueSettings,
     RateLimitSettings,
@@ -37,13 +25,27 @@ from app.abuse import (
     provider_queue_from_config,
     rate_limit_from_config,
 )
+from app.audit import (
+    AuditSettings,
+    count_audit_logs,
+    count_low_confidence_tickets,
+    drop_stats,
+    get_low_confidence_tickets,
+    log_classification,
+    read_audit_logs,
+    settings_from_config,
+    startup_prune,
+)
+from app.audit import (
+    configure as configure_audit,
+)
 from app.ollama_client import (
     BUSY_REASON,
     acquire_provider_call,
-    provider_busy_fallback,
     check_ollama_connection,
     generate_classification,
     is_provider_fallback,
+    provider_busy_fallback,
     provider_fallback,
 )
 from app.rules import RulesEngine
@@ -296,9 +298,7 @@ def require_classify_token(
         or not classify_token.isascii()
         or not hmac.compare_digest(classify_token, expected)
     ):
-        raise HTTPException(
-            status_code=401, detail="classification token required"
-        )
+        raise HTTPException(status_code=401, detail="classification token required")
 
 
 def _client_key(scope) -> str:
@@ -314,7 +314,9 @@ def _too_many(retry_after: int) -> JSONResponse:
     )
 
 
-def rate_limit_batch_remainder(request: Request, req: BatchClassificationRequest) -> None:
+def rate_limit_batch_remainder(
+    request: Request, req: BatchClassificationRequest
+) -> None:
     """A valid batch pays for its other tickets; the first was charged up front."""
     extra = len(req.tickets) - 1
     if extra > 0:

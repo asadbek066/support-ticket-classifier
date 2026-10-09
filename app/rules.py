@@ -85,7 +85,7 @@ class RulesEngine:
         self.reload()
 
     def reload(self):
-        with open(self.path, "r", encoding="utf-8") as f:
+        with open(self.path, encoding="utf-8") as f:
             loaded = yaml.safe_load(f)
         if not isinstance(loaded, dict):
             raise TypeError("Rules configuration must be a YAML mapping")
@@ -102,7 +102,9 @@ class RulesEngine:
             return []
         return [item for item in values if isinstance(item, str)]
 
-    def apply(self, ticket: dict, model_out: object, config: dict | None = None) -> dict:
+    def apply(
+        self, ticket: dict, model_out: object, config: dict | None = None
+    ) -> dict:
         # One snapshot per call: a concurrent reload must not let a single
         # classification read fields from two different config generations.
         cfg = self.cfg if config is None else config
@@ -203,7 +205,9 @@ class RulesEngine:
         if security_signal:
             reason = "Potential security issue detected; routed for human review."
         elif prompt_override_signal:
-            reason = "Ticket included classification instructions; routed for human review."
+            reason = (
+                "Ticket included classification instructions; routed for human review."
+            )
         queue = queue_map.get(category, "triage")
         return {
             "category": category,

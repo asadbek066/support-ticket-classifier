@@ -79,9 +79,7 @@ class MainBoundaryTests(GateIsolation, unittest.TestCase):
                 require_admin_token(admin_token="π" * 32)
 
         self.assertEqual(raised.exception.status_code, 401)
-        self.assertEqual(
-            raised.exception.detail, "admin authentication required"
-        )
+        self.assertEqual(raised.exception.detail, "admin authentication required")
 
 
 class BatchBoundaryTests(GateIsolation, unittest.IsolatedAsyncioTestCase):
@@ -117,14 +115,17 @@ class BatchBoundaryTests(GateIsolation, unittest.IsolatedAsyncioTestCase):
             tickets=[Ticket(subject="first"), Ticket(subject="second")]
         )
 
-        with patch(
-            "app.main.generate_classification",
-            return_value={
-                "category": "Billing & Payments",
-                "confidence": 0.9,
-                "human_review": False,
-            },
-        ), patch("app.main.log_classification", side_effect=OSError("disk full")):
+        with (
+            patch(
+                "app.main.generate_classification",
+                return_value={
+                    "category": "Billing & Payments",
+                    "confidence": 0.9,
+                    "human_review": False,
+                },
+            ),
+            patch("app.main.log_classification", side_effect=OSError("disk full")),
+        ):
             response = await classify_batch(request)
 
         self.assertEqual(response.total, 2)

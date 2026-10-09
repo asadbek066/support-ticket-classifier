@@ -61,14 +61,23 @@ def rate_limit_from_config(config: Mapping[str, object]) -> RateLimitSettings:
         enabled=enabled,
         tickets_per_minute=float(
             _number(
-                raw, "rate_limit", "tickets_per_minute",
-                defaults.tickets_per_minute, 1, 1_000_000,
+                raw,
+                "rate_limit",
+                "tickets_per_minute",
+                defaults.tickets_per_minute,
+                1,
+                1_000_000,
             )
         ),
         # A full batch is charged per ticket, so the bucket must hold one.
         burst=_number(
-            raw, "rate_limit", "burst", defaults.burst,
-            MAX_BATCH_TICKETS, 1_000_000, True,
+            raw,
+            "rate_limit",
+            "burst",
+            defaults.burst,
+            MAX_BATCH_TICKETS,
+            1_000_000,
+            True,
         ),
         max_clients=_number(
             raw, "rate_limit", "max_clients", defaults.max_clients, 1, 1_000_000, True
@@ -85,8 +94,12 @@ def provider_queue_from_config(config: Mapping[str, object]) -> ProviderQueueSet
         ),
         max_wait_seconds=float(
             _number(
-                raw, "provider_queue", "max_wait_seconds",
-                defaults.max_wait_seconds, 0, 80,
+                raw,
+                "provider_queue",
+                "max_wait_seconds",
+                defaults.max_wait_seconds,
+                0,
+                80,
             )
         ),
     )
