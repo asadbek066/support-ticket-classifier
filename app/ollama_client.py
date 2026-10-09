@@ -96,22 +96,34 @@ async def acquire_provider_call(
         if len(_WAITERS) >= max_depth or max_wait <= 0:
             return None, "queue_full"
         _WAITERS.append(waiter)
+    # The wait is a bare future plus a call_later timer rather than
+    # asyncio.wait_for: on Python 3.11 wait_for returns the result instead of
+    # raising CancelledError when the future completed in the same loop
+    # iteration as the cancel, which swallows the cancellation. Ownership is
+    # decided only by `waiter.handed`, read under _GATE_LOCK with no await
+    # between the wake-up and that check, whatever way the wait ended.
+    timer = waiter.loop.call_later(max_wait, waiter.wake)
+    failure: BaseException | None = None
     try:
-        await asyncio.wait_for(waiter.future, timeout=max_wait)
-    except BaseException as exc:
-        with _GATE_LOCK:
-            owns_slot = waiter.handed
-            if not owns_slot:
-                waiter.abandoned = True
-                try:
-                    _WAITERS.remove(waiter)
-                except ValueError:
-                    pass
+        await waiter.future
+    except BaseException as exc:  # noqa: BLE001 - re-raised below
+        failure = exc
+    finally:
+        timer.cancel()
+    with _GATE_LOCK:
+        owns_slot = waiter.handed
+        if not owns_slot:
+            waiter.abandoned = True
+            try:
+                _WAITERS.remove(waiter)
+            except ValueError:
+                pass
+    if failure is not None:
         if owns_slot:
             _release_slot()
-        if isinstance(exc, TimeoutError):
-            return None, "wait_expired"
-        raise
+        raise failure
+    if not owns_slot:
+        return None, "wait_expired"
     return ProviderCall(preacquired=True), None
 
 

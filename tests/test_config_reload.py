@@ -7,6 +7,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app import audit, main
+from tests.gate_isolation import GateIsolation
 
 TOKEN = "t" * 32
 
@@ -33,7 +34,7 @@ CHANGED = (
 )
 
 
-class ConfigReloadTests(unittest.TestCase):
+class ConfigReloadTests(GateIsolation, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

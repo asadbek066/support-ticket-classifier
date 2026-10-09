@@ -21,6 +21,7 @@ from app.ollama_client import (
     acquire_provider_call,
     queued_provider_waiters,
 )
+from tests.gate_isolation import GateIsolation
 
 GOOD = {"category": "Billing & Payments", "confidence": 0.9, "reason": "ok",
         "human_review": False}
@@ -43,7 +44,7 @@ def bounded(test):
     return wrapper
 
 
-class RateLimitEndpointTests(unittest.TestCase):
+class RateLimitEndpointTests(GateIsolation, unittest.TestCase):
     def setUp(self):
         self.addCleanup(setattr, main, "_LIMITER", main._LIMITER)
         main._LIMITER = TokenBucketLimiter(
@@ -154,7 +155,7 @@ class RateLimitEndpointTests(unittest.TestCase):
             provider_queue_from_config({"provider_queue": {"max_depth": -1}})
 
 
-class ClassifyTokenTests(unittest.TestCase):
+class ClassifyTokenTests(GateIsolation, unittest.TestCase):
     def setUp(self):
         for item in (
             patch("app.main.generate_classification", return_value=GOOD),
@@ -224,7 +225,7 @@ class ClassifyTokenTests(unittest.TestCase):
             self.assertEqual(post_one(self.client).status_code, 503)
 
 
-class ProviderGateTests(unittest.IsolatedAsyncioTestCase):
+class ProviderGateTests(GateIsolation, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.held = [ProviderCall() for _ in range(MAX_CONCURRENT_PROVIDER_CALLS)]
         self.assertTrue(all(call.admitted for call in self.held))

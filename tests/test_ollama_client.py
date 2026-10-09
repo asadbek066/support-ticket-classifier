@@ -16,6 +16,7 @@ from app.ollama_client import (
     is_provider_fallback,
     provider_fallback,
 )
+from tests.gate_isolation import GateIsolation
 
 API_URL = "http://127.0.0.1:11434/api/generate"
 
@@ -49,7 +50,7 @@ def classify_stream(chunks, headers=None, encoding="utf-8"):
         return generate_classification({}, ["Billing"], "model", API_URL)
 
 
-class OllamaBoundaryTests(unittest.TestCase):
+class OllamaBoundaryTests(GateIsolation, unittest.TestCase):
     def test_prompt_marks_ticket_fields_as_untrusted_data(self):
         prompt = build_prompt(
             {
@@ -150,7 +151,7 @@ class OllamaBoundaryTests(unittest.TestCase):
         self.assertEqual(result["reason"], FALLBACK_REASON)
 
 
-class OllamaParsingTests(unittest.TestCase):
+class OllamaParsingTests(GateIsolation, unittest.TestCase):
     def test_wrapped_response_is_parsed(self):
         inner = {"category": "Billing", "confidence": 0.9, "human_review": False}
         payload = json.dumps({"response": json.dumps(inner)}).encode()
@@ -237,7 +238,7 @@ def _tags_response(models):
     )
 
 
-class OllamaConnectionCheckTests(unittest.TestCase):
+class OllamaConnectionCheckTests(GateIsolation, unittest.TestCase):
     def test_uses_the_tags_endpoint(self):
         with patch(
             "app.ollama_client.httpx.get", return_value=_tags_response([])
@@ -315,7 +316,7 @@ class OllamaConnectionCheckTests(unittest.TestCase):
         self.assertFalse(result["connected"])
 
 
-class ProviderFallbackTests(unittest.TestCase):
+class ProviderFallbackTests(GateIsolation, unittest.TestCase):
     def test_fallback_shape_is_stable(self):
         self.assertEqual(
             provider_fallback(),
@@ -336,7 +337,7 @@ class ProviderFallbackTests(unittest.TestCase):
         )
 
 
-class ProviderCallControlTests(unittest.TestCase):
+class ProviderCallControlTests(GateIsolation, unittest.TestCase):
     def test_provider_calls_have_bounded_admission(self):
         controls = [
             ProviderCall() for _ in range(MAX_CONCURRENT_PROVIDER_CALLS + 1)

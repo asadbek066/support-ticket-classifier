@@ -12,12 +12,13 @@ from fastapi.testclient import TestClient
 from app import main
 from app.main import app
 from app.schemas import Ticket
+from tests.gate_isolation import GateIsolation
 
 TOKEN = "t" * 32
 ADMIN_ENV = {"TICKET_CLASSIFIER_ADMIN_TOKEN": TOKEN}
 
 
-class ClassifyEndpointTests(unittest.TestCase):
+class ClassifyEndpointTests(GateIsolation, unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
 
@@ -132,7 +133,7 @@ class ClassifyEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
 
-class AuditBoundaryTests(unittest.IsolatedAsyncioTestCase):
+class AuditBoundaryTests(GateIsolation, unittest.IsolatedAsyncioTestCase):
     async def test_classify_audit_timeout_does_not_wait_for_the_write(self):
         release = threading.Event()
 
@@ -191,7 +192,7 @@ class AuditBoundaryTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(finished.wait, 1.0)
             inference_executor.shutdown(wait=True)
 
-class ProviderTimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
+class ProviderTimeoutBoundaryTests(GateIsolation, unittest.IsolatedAsyncioTestCase):
     async def test_classify_timeout_closes_slow_header_connection(self):
         import socketserver
         import time
@@ -264,7 +265,7 @@ class ProviderTimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
             server_thread.join(timeout=1.0)
 
 
-class HealthAndHeadersTests(unittest.TestCase):
+class HealthAndHeadersTests(GateIsolation, unittest.TestCase):
     def test_health_needs_no_admin_token(self):
         response = TestClient(app).get("/health")
         self.assertEqual(response.status_code, 200)
@@ -289,7 +290,7 @@ class HealthAndHeadersTests(unittest.TestCase):
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
 
 
-class VerifyOllamaEndpointTests(unittest.TestCase):
+class VerifyOllamaEndpointTests(GateIsolation, unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
 
@@ -330,7 +331,7 @@ class VerifyOllamaEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
 
 
-class ReloadConfigEndpointTests(unittest.TestCase):
+class ReloadConfigEndpointTests(GateIsolation, unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
 
